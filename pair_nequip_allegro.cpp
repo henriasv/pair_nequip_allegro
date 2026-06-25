@@ -47,6 +47,11 @@
 
 #include <mpi.h>
 
+#include <dlfcn.h>
+#include <cstdint>
+#include <fstream>
+#include <unistd.h>
+
 // Freezing is broken from C++ in <=1.10; so we've dropped support.
 #if (TORCH_VERSION_MAJOR == 1 && TORCH_VERSION_MINOR <= 10)
 #error "PyTorch version < 1.11 is not supported"
@@ -171,6 +176,174 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::settings(int na
   if (narg > 0) error->all(FLERR, "Illegal pair_style command, too many arguments");
 }
 
+// Minimal little-endian readers for the ZIP records below.
+namespace {
+inline uint32_t zip_rd_u16(const unsigned char *p)
+{
+  return uint32_t(p[0]) | (uint32_t(p[1]) << 8);
+}
+inline uint32_t zip_rd_u32(const unsigned char *p)
+{
+  return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) |
+         (uint32_t(p[3]) << 24);
+}
+}    // namespace
+
+template <bool nequip_mode>
+std::vector<std::string>
+PairNequIPAllegro<nequip_mode>::extract_embedded_op_libraries(const std::string &model_path)
+{
+  // `nequip-compile --target pair_nequip` embeds the custom-op shared libraries
+  // (uncompressed/STORED) inside the `.nequip.pt2` zip under the
+  // "nequip_custom_op_libs/" prefix, so the artifact is self-contained for this C++
+  // consumer (which cannot `import` the Python library that would otherwise register
+  // the ops). We parse the zip's central directory by hand (no external dependency;
+  // we control the writer, so only STORED entries are expected), extract each such
+  // `.so` to a temporary file, and return the paths for the caller to dlopen.
+  // Best-effort: returns empty if the file is not a zip or carries no embedded libs
+  // (the common, non-OEQ case).
+  std::vector<std::string> extracted;
+
+  std::ifstream f(model_path, std::ios::binary);
+  if (!f) return extracted;
+
+  // --- locate the End Of Central Directory (EOCD) record by scanning the tail ---
+  f.seekg(0, std::ios::end);
+  const std::streamoff file_size = f.tellg();
+  if (file_size < 22) return extracted;
+  const std::streamoff scan = std::min<std::streamoff>(file_size, 22 + 65535);
+  std::vector<unsigned char> tail(static_cast<size_t>(scan));
+  f.seekg(file_size - scan, std::ios::beg);
+  f.read(reinterpret_cast<char *>(tail.data()), scan);
+  if (!f) return extracted;
+
+  std::streamoff eocd = -1;
+  for (std::streamoff i = scan - 22; i >= 0; --i) {
+    if (tail[i] == 0x50 && tail[i + 1] == 0x4b && tail[i + 2] == 0x05 && tail[i + 3] == 0x06) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return extracted;
+
+  const unsigned char *e = tail.data() + eocd;
+  const uint32_t n_entries = zip_rd_u16(e + 10);
+  const uint32_t cd_size = zip_rd_u32(e + 12);
+  const uint32_t cd_off = zip_rd_u32(e + 16);
+  if (cd_size == 0) return extracted;
+
+  // --- read the central directory ---
+  std::vector<unsigned char> cd(cd_size);
+  f.seekg(cd_off, std::ios::beg);
+  f.read(reinterpret_cast<char *>(cd.data()), cd_size);
+  if (!f) return extracted;
+
+  const std::string prefix = "nequip_custom_op_libs/";
+  std::filesystem::path tmp_dir;    // created lazily on first hit
+
+  size_t pos = 0;
+  for (uint32_t k = 0; k < n_entries && pos + 46 <= cd.size(); ++k) {
+    const unsigned char *c = cd.data() + pos;
+    if (!(c[0] == 0x50 && c[1] == 0x4b && c[2] == 0x01 && c[3] == 0x02)) break;
+    const uint32_t method = zip_rd_u16(c + 10);
+    const uint32_t comp_size = zip_rd_u32(c + 20);
+    const uint32_t name_len = zip_rd_u16(c + 28);
+    const uint32_t extra_len = zip_rd_u16(c + 30);
+    const uint32_t comment_len = zip_rd_u16(c + 32);
+    const uint32_t lh_off = zip_rd_u32(c + 42);
+    const std::string name(reinterpret_cast<const char *>(c + 46), name_len);
+    pos += 46 + name_len + extra_len + comment_len;
+
+    if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) continue;
+    if (name.size() < 3 || name.compare(name.size() - 3, 3, ".so") != 0) continue;
+    if (method != 0) {
+      if (comm->me == 0)
+        std::cerr << "NequIP/Allegro: embedded op library '" << name << "' is compressed "
+                  << "(method " << method << "); skipping (expected STORED).\n";
+      continue;
+    }
+
+    // --- read the local file header to find where the data begins ---
+    unsigned char lh[30];
+    f.seekg(lh_off, std::ios::beg);
+    f.read(reinterpret_cast<char *>(lh), 30);
+    if (!f || !(lh[0] == 0x50 && lh[1] == 0x4b && lh[2] == 0x03 && lh[3] == 0x04)) continue;
+    const uint32_t lh_name_len = zip_rd_u16(lh + 26);
+    const uint32_t lh_extra_len = zip_rd_u16(lh + 28);
+    const std::streamoff data_off =
+        std::streamoff(lh_off) + 30 + lh_name_len + lh_extra_len;
+
+    std::vector<char> data(comp_size);
+    f.seekg(data_off, std::ios::beg);
+    f.read(data.data(), comp_size);
+    if (!f) continue;
+
+    if (tmp_dir.empty()) {
+      tmp_dir = std::filesystem::temp_directory_path() /
+                ("nequip_oplibs_" + std::to_string(static_cast<long>(::getpid())));
+      std::error_code ec;
+      std::filesystem::create_directories(tmp_dir, ec);
+    }
+    const std::filesystem::path out = tmp_dir / std::filesystem::path(name).filename();
+    std::ofstream of(out, std::ios::binary | std::ios::trunc);
+    of.write(data.data(), comp_size);
+    of.close();
+    if (of) extracted.push_back(out.string());
+  }
+
+  return extracted;
+}
+
+template <bool nequip_mode>
+void PairNequIPAllegro<nequip_mode>::load_extra_op_libraries(const std::string &model_path)
+{
+  // Compiled models may call custom Torch operators provided by separate shared
+  // libraries (e.g. OpenEquivariance's `libtorch_tp_jit.so`). In Python these ops are
+  // registered as a side effect of `import openequivariance`; in this standalone C++
+  // process nothing imports them, so we must dlopen them (RTLD_GLOBAL runs their
+  // `TORCH_LIBRARY` registrars) BEFORE loading the model, otherwise the load aborts
+  // with e.g. "Could not find schema for libtorch_tp_jit::jit_conv_forward".
+  // Library paths are collected from, in order:
+  //   1. libraries embedded in the model's `.nequip.pt2` by `nequip-compile` (the
+  //      self-contained default; extracted to temp files just-in-time),
+  //   2. a sidecar file "<model_path>.oplibs" (one path per line; blank lines and '#'
+  //      comments ignored; relative paths are resolved against the model's directory
+  //      so the model+lib stay portable together),
+  //   3. the env var NEQUIP_OP_LIBRARIES (colon-separated paths), an explicit override.
+  std::vector<std::string> libs = extract_embedded_op_libraries(model_path);
+
+  const std::filesystem::path model_dir = std::filesystem::path(model_path).parent_path();
+  std::ifstream sidecar(model_path + ".oplibs");
+  if (sidecar) {
+    std::string line;
+    while (std::getline(sidecar, line)) {
+      const auto b = line.find_first_not_of(" \t\r\n");
+      if (b == std::string::npos) continue;
+      const auto e = line.find_last_not_of(" \t\r\n");
+      line = line.substr(b, e - b + 1);
+      if (line.empty() || line[0] == '#') continue;
+      std::filesystem::path p(line);
+      libs.push_back((p.is_relative() ? (model_dir / p) : p).string());
+    }
+  }
+
+  if (const char *env_p = std::getenv("NEQUIP_OP_LIBRARIES")) {
+    std::stringstream ss(env_p);
+    std::string item;
+    while (std::getline(ss, item, ':'))
+      if (!item.empty()) libs.push_back(item);
+  }
+
+  for (const std::string &lib : libs) {
+    if (comm->me == 0) std::cout << "NequIP/Allegro: loading custom op library " << lib << "\n";
+    if (dlopen(lib.c_str(), RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+      const char *de = dlerror();
+      error->all(FLERR, "NequIP/Allegro: failed to dlopen custom op library '" + lib +
+                            "': " + (de ? de : "unknown error"));
+    }
+  }
+}
+
 template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::coeff(int narg, char **arg)
 {
   if (!allocated) allocate();
@@ -204,6 +377,10 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::coeff(int narg,
   else {
     throw std::runtime_error("Only accepts model paths with extension `.nequip.pth` or `.nequip.pt2`, but found" + model_path);
   }
+
+  // Load any custom Torch op libraries the compiled model depends on (e.g. OEQ's
+  // libtorch_tp_jit.so) BEFORE loading the model, so their operators are registered.
+  load_extra_op_libraries(model_path);
 
   // set up metadata dict
   std::unordered_map<std::string, std::string> metadata;

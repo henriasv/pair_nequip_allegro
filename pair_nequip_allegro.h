@@ -80,6 +80,13 @@ class PairNequIPAllegro : public Pair {
   std::vector<std::string> custom_output_names;
   std::map<std::string, torch::Tensor> custom_output;
   void add_custom_output(std::string);
+  // dlopen custom Torch op libraries (e.g. OEQ's libtorch_tp_jit.so) the compiled
+  // model depends on, from libraries embedded in the model's `.nequip.pt2` zip, a
+  // "<model>.oplibs" sidecar, and/or NEQUIP_OP_LIBRARIES.
+  void load_extra_op_libraries(const std::string &model_path);
+  // Extract custom-op `.so` libraries embedded in the model's `.nequip.pt2` zip (under
+  // the "nequip_custom_op_libs/" prefix, STORED) to temporary files; returns their paths.
+  std::vector<std::string> extract_embedded_op_libraries(const std::string &model_path);
 
  protected:
   int debug_mode = 0;
