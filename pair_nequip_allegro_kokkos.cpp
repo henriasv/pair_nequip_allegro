@@ -301,9 +301,16 @@ void PairAllegroKokkos<nequip_mode>::compute(int eflag_in, int vflag_in)
                        static_cast<int64_t>(this->atom->nghost)},
                       torch::TensorOptions().dtype(torch::kInt64))
             .to(this->device);
+    // truncate-to-nlocal marker `(nlocal,)`: carries the owned count as the model's backed
+    // `nlocal` dynamic dim so per-node ops are computed on owned atoms only (contents unused).
+    torch::Tensor marker_tensor =
+        torch::zeros({static_cast<int64_t>(this->atom->nlocal)},
+                     torch::TensorOptions().dtype(torch::kInt64))
+            .to(this->device);
     input.insert("cell", cell_tensor);
     input.insert("edge_cell_shift", shift_tensor);
     input.insert("num_local_ghost_atoms", nlg_tensor);
+    input.insert("num_local_nodes_marker", marker_tensor);
     LAMMPS_NS::active_nequip_bridge = this;
   }
 

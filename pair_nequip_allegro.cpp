@@ -845,6 +845,11 @@ template <bool nequip_mode> c10::Dict<std::string, torch::Tensor> PairNequIPAlle
   torch::Tensor nlg_tensor = torch::tensor(
       {static_cast<int64_t>(nlocal), static_cast<int64_t>(atom->nghost)},
       torch::TensorOptions().dtype(torch::kInt64));
+  // truncate-to-nlocal marker: a `(nlocal,)` tensor whose ONLY role is to carry the owned
+  // count as the model's backed `nlocal` dynamic dim (contents irrelevant). The model slices
+  // every per-node op to `marker.shape[0]`.
+  torch::Tensor marker_tensor =
+      torch::zeros({static_cast<int64_t>(nlocal)}, torch::TensorOptions().dtype(torch::kInt64));
 
   c10::Dict<std::string, torch::Tensor> input;
   input.insert("pos", pos_tensor.to(device));
@@ -853,6 +858,7 @@ template <bool nequip_mode> c10::Dict<std::string, torch::Tensor> PairNequIPAlle
   input.insert("cell", cell_tensor.to(device));
   input.insert("edge_cell_shift", shift_tensor.to(device));
   input.insert("num_local_ghost_atoms", nlg_tensor.to(device));
+  input.insert("num_local_nodes_marker", marker_tensor.to(device));
   return input;
 }
 
