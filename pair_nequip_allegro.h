@@ -37,8 +37,31 @@ PairStyle(allegro,PairNequIPAllegro<false>)
 
 namespace LAMMPS_NS {
 
+// === Route 2b: native multi-rank per-layer ghost exchange ===
+// The compiled `.pt2` calls the globally-registered ops `nequip_lammps::ghost_exchange`
+// (forward halo) and `ghost_exchange_reverse` (in-model autograd / force pass). They reach the
+// live pair instance through a `thread_local` pointer to this non-template bridge so the
+// registration carries no LAMMPS handle as an argument (the obstacle that made the mliap op
+// eager-only). The pair implements the two methods via `Comm::forward_comm`/`reverse_comm`.
+struct NequIPGhostExchangeBridge {
+  // Forward halo: return a copy of `[ntotal, F]` node features with ghost rows filled from their
+  // owners. The pair decides host-staged (plain) vs device-resident (Kokkos) internally.
+  virtual torch::Tensor forward_exchange_t(const torch::Tensor &node_features) = 0;
+  // Reverse (in-model autograd / force pass): accumulate ghost-row grads onto owners, zero ghosts.
+  virtual torch::Tensor reverse_exchange_t(const torch::Tensor &grad_features) = 0;
+
+ protected:
+  // Non-virtual, protected destructor: instances are only ever owned/deleted through `Pair*`
+  // (LAMMPS owns the pair), never through this mix-in pointer, so no virtual destructor is needed.
+  // This also avoids a multiple-inheritance exception-specification clash with `Pair`'s
+  // (noexcept) virtual destructor when `PairNequIPAllegro` derives from both.
+  ~NequIPGhostExchangeBridge() = default;
+};
+// Set to the active pair for the duration of a model call (one per thread).
+extern thread_local NequIPGhostExchangeBridge *active_nequip_bridge;
+
 template<bool nequip_mode>
-class PairNequIPAllegro : public Pair {
+class PairNequIPAllegro : public Pair, public NequIPGhostExchangeBridge {
  public:
   PairNequIPAllegro(class LAMMPS *);
   virtual ~PairNequIPAllegro();
@@ -48,6 +71,16 @@ class PairNequIPAllegro : public Pair {
   virtual double init_one(int, int);
   virtual void init_style();
   void allocate();
+
+  // per-layer feature halo (Route 2b) -- LAMMPS Comm callbacks
+  int pack_forward_comm(int, int *, double *, int, int *) override;
+  void unpack_forward_comm(int, int, double *) override;
+  int pack_reverse_comm(int, int, double *) override;
+  void unpack_reverse_comm(int, int *, double *) override;
+  // NequIPGhostExchangeBridge entry points (called by the registered ops). The plain pair stages
+  // through host double buffers + Comm::forward_comm/reverse_comm (CommBrick).
+  torch::Tensor forward_exchange_t(const torch::Tensor &node_features) override;
+  torch::Tensor reverse_exchange_t(const torch::Tensor &grad_features) override;
 
   double cutoff;
   torch::Device device = torch::kCPU;
@@ -93,7 +126,18 @@ class PairNequIPAllegro : public Pair {
 
   double** cutoff_matrix;
 
+  // multi-rank native pair_nequip: model takes `num_local_ghost_atoms` and the per-layer
+  // ghost exchange runs across ranks (set in `coeff` from the model's declared input order).
+  bool is_multirank = false;
+  // bridge state for the in-flight feature exchange (valid during a `comm->*_comm(this, F)`)
+  double *exch_buf = nullptr;   // [ntotal * exch_ncol], row-major (atom-major)
+  int exch_ncol = 0;            // flattened per-node feature width F for the current layer
+
   c10::Dict<std::string, torch::Tensor> preprocess();
+  // multi-rank build: all `ntotal` atoms in atom-index order, real ghost positions, edges from
+  // local atoms only (real neighbor indices, no tag2i remap, zero cell shift), plus the
+  // `num_local_ghost_atoms` count the per-layer exchange uses.
+  c10::Dict<std::string, torch::Tensor> preprocess_multirank();
   c10::Dict<std::string, torch::Tensor> call(c10::Dict<std::string, torch::Tensor>);
 
   torch::Tensor get_cell();

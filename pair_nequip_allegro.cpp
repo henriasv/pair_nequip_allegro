@@ -41,6 +41,7 @@
 #include <sstream>
 #include <string>
 #include <torch/csrc/jit/runtime/graph_executor.h>
+#include <torch/library.h>
 #include <torch/script.h>
 #include <torch/torch.h>
 #include <vector>
@@ -68,10 +69,57 @@
 
 using namespace LAMMPS_NS;
 
+// === Route 2b op bridge: thread-local active pair + global op registration ===
+// Active pair for the current model call (per thread). The registered ops below use it to reach
+// `Comm::forward_comm`/`reverse_comm`. Null => no LAMMPS comm context => identity (single rank,
+// ASE, export tracing) -- which is exactly the behaviour the M3 `.pt2` was validated against.
+thread_local LAMMPS_NS::NequIPGhostExchangeBridge *LAMMPS_NS::active_nequip_bridge = nullptr;
+
+namespace {
+// Per-layer feature halo: overwrite ghost rows of `[ntotal, F]` from their owning atoms. The
+// active pair decides host-staged (plain CommBrick) vs device-resident (Kokkos CommKokkos).
+torch::Tensor ghost_exchange_impl(const torch::Tensor &node_features) {
+  auto *bridge = LAMMPS_NS::active_nequip_bridge;
+  if (bridge == nullptr) return node_features.clone();    // identity: no comm context
+  return bridge->forward_exchange_t(node_features);
+}
+// Transpose of the halo for the in-model autograd (force) pass: accumulate ghost-row grads onto
+// owners and zero the ghost rows (the forward output's ghost rows don't depend on ghost inputs).
+torch::Tensor ghost_exchange_reverse_impl(const torch::Tensor &grad_features) {
+  auto *bridge = LAMMPS_NS::active_nequip_bridge;
+  if (bridge == nullptr) return grad_features.clone();
+  return bridge->reverse_exchange_t(grad_features);
+}
+}    // namespace
+
+// Define the ops in the LAMMPS runtime process: the compiled `.pt2` looks them up by name in the
+// dispatcher at run time. The nequip Python package defines the same schema in the *compile*
+// process; those are separate processes, so there is no double-definition. Arg names/schema must
+// match what the model was traced against (`node_features`, `grad_features`; functional).
+TORCH_LIBRARY(nequip_lammps, m) {
+  m.def("ghost_exchange(Tensor node_features) -> Tensor");
+  m.def("ghost_exchange_reverse(Tensor grad_features) -> Tensor");
+}
+TORCH_LIBRARY_IMPL(nequip_lammps, CompositeExplicitAutograd, m) {
+  m.impl("ghost_exchange", &ghost_exchange_impl);
+  m.impl("ghost_exchange_reverse", &ghost_exchange_reverse_impl);
+}
+
 template <bool nequip_mode> PairNequIPAllegro<nequip_mode>::PairNequIPAllegro(LAMMPS *lmp) : Pair(lmp)
 {
   restartinfo = 0;
   manybody_flag = 1;
+
+  // Size the LAMMPS forward/reverse comm buffers for the per-layer ghost-feature halo (Route 2b).
+  // `Comm::init()` allocates `buf_send`/`buf_recv` from `max(comm_forward, comm_reverse)` BEFORE
+  // any compute, and `forward_comm(this, size)` does NOT grow them -- so this must be set here
+  // (constructor runs before `comm->init()`, order-independently), large enough for the widest
+  // per-node feature vector exchanged. OAM-S node features are 320 doubles/node; OAM-M is larger.
+  // 2048 covers OAM-S/M with headroom; `*_exchange()` hard-errors if a model ever exceeds it
+  // (rather than silently overflowing the buffer and corrupting the heap). Harmless for the
+  // single-rank/allegro paths (just a slightly larger, unused buffer).
+  comm_forward = 2048;
+  comm_reverse = 2048;
 
   if (comm->me == 0)
     std::cout << "NequIP/Allegro is using input precision " << typeid(inputtype).name()
@@ -87,12 +135,10 @@ template <bool nequip_mode> PairNequIPAllegro<nequip_mode>::PairNequIPAllegro(LA
     }
   }
 
-  // error out if more than one rank but in NequIP mode
-  if (nequip_mode && comm->nprocs > 1) {
-    error->all(FLERR,
-               "pair_nequip only works with a single MPI rank but more than one detected");
-  }
-  
+  // NOTE: the single-rank restriction for `pair_nequip` is enforced in `init_style()`, not here:
+  // whether the model is multi-rank-capable (declares `num_local_ghost_atoms`, enabling per-layer
+  // ghost exchange) is only known after `coeff()` loads it. Multi-rank models lift the restriction.
+
   // === set device ===
   if (torch::cuda::is_available()) {
     int deviceidx = -1;
@@ -142,6 +188,23 @@ template <bool nequip_mode> PairNequIPAllegro<nequip_mode>::~PairNequIPAllegro()
 template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::init_style()
 {
   if (atom->tag_enable == 0) error->all(FLERR, "Pair style Allegro requires atom IDs");
+
+  if (nequip_mode && is_multirank) {
+    // Multi-rank native pair_nequip (Route 2b). Local atoms' full neighbor lists already include
+    // ghost neighbors, so REQ_GHOST is unnecessary; the per-layer halo of node features is handled
+    // by the registered exchange ops via Comm. Newton must be on so LAMMPS reverse-communicates
+    // the ghost forces (dE_owned/dx_ghost) home, exactly like the allegro path.
+    neighbor->add_request(this, NeighConst::REQ_FULL);
+    if (!force->newton_pair)
+      error->all(FLERR, "multi-rank pair_style nequip requires newton pair on");
+    return;
+  }
+
+  // Single-rank pair_nequip cannot be decomposed across ranks.
+  if (nequip_mode && comm->nprocs > 1)
+    error->all(FLERR,
+               "pair_nequip with this (single-rank) model only works with a single MPI rank; "
+               "compile a multi-rank model (target pair_nequip_multirank) for domain decomposition");
 
   // Request a full neighbor list.
   if (lmp->kokkos) {
@@ -412,7 +475,13 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::coeff(int narg,
     throw std::runtime_error("AOT Inductor compiled model (`.nequip.pt2` extension) found but pair style not compiled with `NEQUIP_AOT_COMPILE`");
 #else
     // === AOT ===
-    aot_model = std::make_unique<torch::inductor::AOTIModelPackageLoader>(model_path);
+    // Pin the model (incl. its constant weights) to THIS rank's GPU. The loader places constants
+    // on `device_index` at construction; default (-1) = current device = cuda:0 for every rank,
+    // which on a multi-GPU run leaves rank r's weights on cuda:0 while its inputs are on cuda:r
+    // -> cross-device memory fault. Passing device.index() loads them on cuda:r directly.
+    aot_model = std::make_unique<torch::inductor::AOTIModelPackageLoader>(
+        model_path, "model", /*run_single_threaded=*/false, /*num_runners=*/1,
+        /*device_index=*/device.is_cuda() ? device.index() : -1);
     metadata = aot_model->get_metadata();
 
     // set up input and output order
@@ -436,6 +505,13 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::coeff(int narg,
       //Default output fields
       model_output_order = {"atomic_energy", "forces", "virial"};
     }
+
+    // multi-rank native pair_nequip: the model declares `num_local_ghost_atoms` as an input, which
+    // signals the per-layer ghost-exchange path (this pair installs the real exchange ops).
+    is_multirank = std::find(model_input_order.begin(), model_input_order.end(),
+                             std::string("num_local_ghost_atoms")) != model_input_order.end();
+    if (is_multirank && comm->me == 0)
+      std::cout << "NequIP: multi-rank model detected -- per-layer ghost exchange enabled\n";
 #endif
   }
 
@@ -542,8 +618,22 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::compute(int efl
 
   // create input to model (positions etc)
   auto input = preprocess();
+  // For multi-rank models the per-layer ghost-exchange ops (called from inside the compiled
+  // model) reach this pair's Comm through the thread-local bridge; arm it for the model call.
+  if (is_multirank) {
+    active_nequip_bridge = this;
+    static bool m4_diag_done = false;    // one-shot per rank
+    if (!m4_diag_done) {
+      m4_diag_done = true;
+      std::cout << "[M4 rank " << comm->me << "] nlocal=" << atom->nlocal
+                << " nghost=" << atom->nghost << " ntotal=" << ntotal
+                << " device=" << device << " comm_forward=" << comm_forward
+                << std::endl;
+    }
+  }
   // evaluate model
   auto output = call(input);
+  if (is_multirank) active_nequip_bridge = nullptr;
   if (debug_mode && comm->me == 0) {
     std::cout << "NequIP/Allegro: Model outputs:";
     for (const auto &elem : output) {
@@ -565,16 +655,34 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::compute(int efl
   // NequIP only produces forces on local atoms,
   // Allegro also on ghost atoms, these are reverse communicated w/Newton
   eng_vdwl = 0.0;
-  int nforces = nequip_mode ? inum : ntotal;
+  if (is_multirank) {
+    // Forces are in atom-index order (preprocess_multirank built pos that way). Ghost forces
+    // (dE_owned/dx_ghost) go home via LAMMPS' newton reverse_comm of atom->f after compute().
+    // The model's atomic_energy is already owned-masked, but we still sum over local atoms only.
+    int nl = atom->nlocal;
+    int nt = nl + atom->nghost;
 #pragma omp parallel for reduction(+ : eng_vdwl)
-  for (int ii = 0; ii < nforces; ii++) {
-    int i = ilist[ii];
+    for (int i = 0; i < nt; i++) {
+      f[i][0] += forces[i][0];
+      f[i][1] += forces[i][1];
+      f[i][2] += forces[i][2];
+      if (i < nl) {
+        if (eflag_atom) eatom[i] = atomic_energies[i][0];
+        eng_vdwl += atomic_energies[i][0];
+      }
+    }
+  } else {
+    int nforces = nequip_mode ? inum : ntotal;
+#pragma omp parallel for reduction(+ : eng_vdwl)
+    for (int ii = 0; ii < nforces; ii++) {
+      int i = ilist[ii];
 
-    f[i][0] += forces[i][0];
-    f[i][1] += forces[i][1];
-    f[i][2] += forces[i][2];
-    if (eflag_atom && ii < inum) eatom[i] = atomic_energies[i][0];
-    if (ii < inum) eng_vdwl += atomic_energies[i][0];
+      f[i][0] += forces[i][0];
+      f[i][1] += forces[i][1];
+      f[i][2] += forces[i][2];
+      if (eflag_atom && ii < inum) eatom[i] = atomic_energies[i][0];
+      if (ii < inum) eng_vdwl += atomic_energies[i][0];
+    }
   }
 
   if (vflag) {
@@ -608,6 +716,12 @@ template <bool nequip_mode> c10::Dict<std::string, torch::Tensor> PairNequIPAlle
   // This function takes an "AtomicDataDict", calls the model, and returns an "AtomicDataDict"
   // Note that this function does NOT deal with devices, it assumes `input` is already on the right device and returns whatever device the model returns.
   // Moving to device is the responsibility of the calling code, since what device the original tensors are on varies between Kokkos and non-Kokkos anyway.
+
+  // Pin the active accelerator to this rank's device for the whole model call. The AOTInductor
+  // model launches kernels on the *current* device; on a multi-GPU run rank r's inputs live on
+  // cuda:r, so without this the kernels can launch on cuda:0 and fault on cross-device memory.
+  c10::OptionalDeviceGuard _device_guard;
+  if (device.is_cuda() && device.index() >= 0) _device_guard.reset_device(device);
 
   // call the model depending on compilation mode
   c10::Dict<std::string, torch::Tensor> output;
@@ -652,7 +766,98 @@ template <bool nequip_mode> c10::Dict<std::string, torch::Tensor> PairNequIPAlle
 }
 
 
+template <bool nequip_mode> c10::Dict<std::string, torch::Tensor> PairNequIPAllegro<nequip_mode>::preprocess_multirank() {
+  // === multi-rank native pair_nequip input build (Route 2b) ===
+  // Everything is indexed in ATOM order (0..nlocal-1 local, nlocal..ntotal-1 ghost) so the row
+  // order matches what Comm::forward_comm/reverse_comm expect during the per-layer exchange.
+  double **x = atom->x;
+  int *type = atom->type;
+  int nlocal = atom->nlocal;
+  int ntotal = nlocal + atom->nghost;    // comm ntotal -- ALL ghosts, matches the halo
+
+  int inum = list->inum;                  // == nlocal (REQ_FULL, no ghost lists)
+  int *ilist = list->ilist;
+  int *numneigh = list->numneigh;
+  int **firstneigh = list->firstneigh;
+
+  // count edges -- from local atoms only; neighbors j may be ghosts (real indices)
+  int nedges = 0;
+  std::vector<int> neigh_per_atom(inum, 0);
+#pragma omp parallel for reduction(+ : nedges)
+  for (int ii = 0; ii < inum; ii++) {
+    int i = ilist[ii];
+    int jnum = numneigh[i];
+    int *jlist = firstneigh[i];
+    for (int jj = 0; jj < jnum; jj++) {
+      int j = jlist[jj] & NEIGHMASK;
+      double dx = x[i][0] - x[j][0];
+      double dy = x[i][1] - x[j][1];
+      double dz = x[i][2] - x[j][2];
+      double rsq = dx * dx + dy * dy + dz * dz;
+      double cutij = cutoff_matrix[type[i] - 1][type[j] - 1];
+      if (rsq <= cutij * cutij) { neigh_per_atom[ii]++; nedges++; }
+    }
+  }
+  std::vector<int> cumsum_neigh_per_atom(inum, 0);
+  for (int ii = 1; ii < inum; ii++)
+    cumsum_neigh_per_atom[ii] = cumsum_neigh_per_atom[ii - 1] + neigh_per_atom[ii - 1];
+
+  torch::Tensor pos_tensor = torch::zeros({ntotal, 3}, torch::TensorOptions().dtype(inputtorchtype));
+  torch::Tensor types_tensor = torch::zeros({ntotal}, torch::TensorOptions().dtype(torch::kInt64));
+  torch::Tensor edges_tensor = torch::zeros({2, nedges}, torch::TensorOptions().dtype(torch::kInt64));
+  // ghost positions are real => no periodic reconstruction => edge_cell_shift is identically zero
+  torch::Tensor shift_tensor = torch::zeros({nedges, 3}, torch::TensorOptions().dtype(inputtorchtype));
+  auto pos = pos_tensor.accessor<inputtype, 2>();
+  auto types = types_tensor.accessor<long, 1>();
+  auto edges = edges_tensor.accessor<long, 2>();
+
+  // positions + types for ALL atoms (owned + ghost), real coordinates
+#pragma omp parallel for
+  for (int i = 0; i < ntotal; i++) {
+    pos[i][0] = x[i][0];
+    pos[i][1] = x[i][1];
+    pos[i][2] = x[i][2];
+    types[i] = type_mapper[type[i] - 1];
+  }
+
+  // edges: local atom i (dst) <- real neighbor j (src), no remap
+#pragma omp parallel for
+  for (int ii = 0; ii < inum; ii++) {
+    int i = ilist[ii];
+    int jnum = numneigh[i];
+    int *jlist = firstneigh[i];
+    int edge_counter = cumsum_neigh_per_atom[ii];
+    for (int jj = 0; jj < jnum; jj++) {
+      int j = jlist[jj] & NEIGHMASK;
+      double dx = x[i][0] - x[j][0];
+      double dy = x[i][1] - x[j][1];
+      double dz = x[i][2] - x[j][2];
+      double rsq = dx * dx + dy * dy + dz * dz;
+      double cutij = cutoff_matrix[type[i] - 1][type[j] - 1];
+      if (rsq > cutij * cutij) continue;
+      edges[0][edge_counter] = i;    // dst = local owner
+      edges[1][edge_counter] = j;    // src = real neighbor (ghost ok)
+      edge_counter++;
+    }
+  }
+
+  torch::Tensor cell_tensor = get_cell().unsqueeze(0);
+  torch::Tensor nlg_tensor = torch::tensor(
+      {static_cast<int64_t>(nlocal), static_cast<int64_t>(atom->nghost)},
+      torch::TensorOptions().dtype(torch::kInt64));
+
+  c10::Dict<std::string, torch::Tensor> input;
+  input.insert("pos", pos_tensor.to(device));
+  input.insert("edge_index", edges_tensor.to(device));
+  input.insert("atom_types", types_tensor.to(device));
+  input.insert("cell", cell_tensor.to(device));
+  input.insert("edge_cell_shift", shift_tensor.to(device));
+  input.insert("num_local_ghost_atoms", nlg_tensor.to(device));
+  return input;
+}
+
 template <bool nequip_mode> c10::Dict<std::string, torch::Tensor> PairNequIPAllegro<nequip_mode>::preprocess() {
+  if (is_multirank) return preprocess_multirank();
   // Atom positions, including ghost atoms
   double **x = atom->x;
   // Atom IDs, unique, reproducible, the "real" indices
@@ -879,6 +1084,107 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::get_tag2i(std::
 template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::add_custom_output(std::string name)
 {
   custom_output_names.push_back(name);
+}
+
+// === Route 2b: per-layer feature halo via LAMMPS Comm ===
+// `exch_buf` is a row-major `[ntotal, exch_ncol]` CPU double buffer (staged by the op). Node
+// features are translation-invariant, so packing copies them verbatim (no pbc shift, unlike
+// positions). forward = owners -> ghosts; reverse = ghosts -> owners (accumulate).
+
+template <bool nequip_mode>
+int PairNequIPAllegro<nequip_mode>::pack_forward_comm(int n, int *list, double *buf,
+                                                      int /*pbc_flag*/, int * /*pbc*/)
+{
+  const long F = exch_ncol;
+  int m = 0;
+  for (int i = 0; i < n; i++) {
+    const long base = (long) list[i] * F;
+    for (long c = 0; c < F; c++) buf[m++] = exch_buf[base + c];
+  }
+  return m;
+}
+
+template <bool nequip_mode>
+void PairNequIPAllegro<nequip_mode>::unpack_forward_comm(int n, int first, double *buf)
+{
+  const long F = exch_ncol;
+  int m = 0;
+  for (int i = 0; i < n; i++) {
+    const long base = (long) (first + i) * F;
+    for (long c = 0; c < F; c++) exch_buf[base + c] = buf[m++];
+  }
+}
+
+template <bool nequip_mode>
+int PairNequIPAllegro<nequip_mode>::pack_reverse_comm(int n, int first, double *buf)
+{
+  const long F = exch_ncol;
+  int m = 0;
+  for (int i = 0; i < n; i++) {
+    const long base = (long) (first + i) * F;
+    for (long c = 0; c < F; c++) buf[m++] = exch_buf[base + c];
+  }
+  return m;
+}
+
+template <bool nequip_mode>
+void PairNequIPAllegro<nequip_mode>::unpack_reverse_comm(int n, int *list, double *buf)
+{
+  const long F = exch_ncol;
+  int m = 0;
+  for (int i = 0; i < n; i++) {
+    const long base = (long) list[i] * F;
+    for (long c = 0; c < F; c++) exch_buf[base + c] += buf[m++];
+  }
+}
+
+template <bool nequip_mode>
+torch::Tensor PairNequIPAllegro<nequip_mode>::forward_exchange_t(const torch::Tensor &node_features)
+{
+  // Host-staged forward halo: D2H (to double) -> CommBrick::forward_comm over host buffers -> H2D.
+  auto f = node_features.contiguous();
+  const int64_t ntotal = f.size(0);
+  const int ncol = ntotal > 0 ? static_cast<int>(f.numel() / ntotal) : 0;
+  // `comm_forward` (set in the constructor) sized `buf_send`/`buf_recv`; `pack_forward_comm`
+  // writes `ncol` doubles/atom into them. Exceeding that bound would overflow the buffer.
+  if (ncol > comm_forward)
+    error->all(FLERR, "pair_nequip per-layer feature width exceeds the comm buffer; "
+                      "increase comm_forward/comm_reverse in PairNequIPAllegro");
+  auto cpu = f.to(torch::kCPU, torch::kDouble).contiguous();
+  exch_buf = cpu.data_ptr<double>();
+  exch_ncol = ncol;
+  comm->forward_comm(this, ncol);
+  exch_buf = nullptr;
+  exch_ncol = 0;
+  return cpu.to(node_features.device(), node_features.dtype()).view_as(node_features);
+}
+
+template <bool nequip_mode>
+torch::Tensor PairNequIPAllegro<nequip_mode>::reverse_exchange_t(const torch::Tensor &grad_features)
+{
+  auto g = grad_features.contiguous();
+  const int64_t ntot_t = g.size(0);
+  const int ncol = ntot_t > 0 ? static_cast<int>(g.numel() / ntot_t) : 0;
+  if (ncol > comm_reverse)
+    error->all(FLERR, "pair_nequip per-layer feature width exceeds the comm buffer; "
+                      "increase comm_forward/comm_reverse in PairNequIPAllegro");
+  auto cpu = g.to(torch::kCPU, torch::kDouble).contiguous();
+  double *buf = cpu.data_ptr<double>();
+  exch_buf = buf;
+  exch_ncol = ncol;
+  comm->reverse_comm(this, ncol);
+  // dy[ghost] = 0: the forward halo output's ghost rows do not depend on ghost inputs, so after
+  // accumulating ghost grads onto owners the ghost rows of the input gradient must be zeroed.
+  const long F = ncol;
+  const int nlocal = atom->nlocal;
+  const int ntotal = nlocal + atom->nghost;
+  for (int i = nlocal; i < ntotal; i++) {
+    const long base = (long) i * F;
+    for (long c = 0; c < F; c++) buf[base + c] = 0.0;
+  }
+  exch_buf = nullptr;
+  exch_ncol = 0;
+  return cpu.to(grad_features.device(), grad_features.dtype()).view_as(grad_features);
 }
 
 namespace LAMMPS_NS {

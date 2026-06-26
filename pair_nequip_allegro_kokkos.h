@@ -14,6 +14,7 @@
 #ifdef PAIR_CLASS
 
 PairStyle(allegro/kk,PairAllegroKokkos<false>)
+PairStyle(nequip/kk,PairAllegroKokkos<true>)
 
 #else
 
@@ -21,13 +22,14 @@ PairStyle(allegro/kk,PairAllegroKokkos<false>)
 #define LMP_PAIR_ALLEGRO_KOKKOS_H
 
 #include "pair_nequip_allegro.h"
+#include "kokkos_base.h"
 #include <pair_kokkos.h>
 
 
 namespace LAMMPS_NS {
 
 template<bool nequip_mode>
-class PairAllegroKokkos : public PairNequIPAllegro<nequip_mode> {
+class PairAllegroKokkos : public PairNequIPAllegro<nequip_mode>, public KokkosBase {
  public:
   typedef PairNequIPAllegro<nequip_mode> super;
   using DeviceType = LMPDeviceType;
@@ -43,6 +45,16 @@ class PairAllegroKokkos : public PairNequIPAllegro<nequip_mode> {
   virtual void compute(int, int);
   virtual void coeff(int, char **);
   virtual void init_style();
+
+  // === Route 2b device-resident per-layer feature halo (M6) ===
+  // Bridge overrides: keep features ON the GPU, exchange via CommKokkos::*_comm_device.
+  torch::Tensor forward_exchange_t(const torch::Tensor &node_features) override;
+  torch::Tensor reverse_exchange_t(const torch::Tensor &grad_features) override;
+  // KokkosBase device comm callbacks: gather/scatter feature rows of the on-GPU tensor.
+  int pack_forward_comm_kokkos(int, DAT::tdual_int_1d, DAT::tdual_double_1d &, int, int *) override;
+  void unpack_forward_comm_kokkos(int, int, DAT::tdual_double_1d &) override;
+  int pack_reverse_comm_kokkos(int, int, DAT::tdual_double_1d &) override;
+  void unpack_reverse_comm_kokkos(int, DAT::tdual_int_1d, DAT::tdual_double_1d &) override;
 
   typename AT::t_kkacc_1d d_eatom;
   typename AT::t_kkacc_1d_6 d_vatom; 
@@ -80,6 +92,15 @@ class PairAllegroKokkos : public PairNequIPAllegro<nequip_mode> {
   InputFloatView2D d_xfloat;
 
   View2D d_cutoff_matrix;
+
+  // device-resident feature-halo state, valid only for the duration of one
+  // comm->forward_comm/reverse_comm(this, F) call (no reentrancy: the per-layer exchanges run
+  // sequentially inside a single model call). Features are F64 (inputtype==double). We index the
+  // tensor's raw device pointer directly in the pack/unpack kernels (the mliap/kk pattern), which
+  // keeps everything on the device stream and needs no torch<->Kokkos fence (proven by mliap/kk).
+  double *exch_ptr_kk = nullptr;   // device ptr to the live [ntotal_padded, F] feature buffer
+  torch::Tensor exch_hold;         // keeps that tensor's storage alive across the comm call
+  int exch_ncol_kk = 0;            // per-node feature width F for the in-flight exchange
 
 
 

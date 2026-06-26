@@ -64,6 +64,9 @@ PairAllegroKokkos<nequip_mode>::PairAllegroKokkos(LAMMPS *lmp) : PairNequIPAlleg
   this->execution_space = ExecutionSpaceFromDevice<DeviceType>::space;
   this->datamask_read = X_MASK | F_MASK | TAG_MASK | TYPE_MASK | ENERGY_MASK | VIRIAL_MASK;
   this->datamask_modify = F_MASK | ENERGY_MASK | VIRIAL_MASK;
+  // Route the per-layer feature reverse_comm through CommKokkos' device path (forward already
+  // routes on execution_space==Device). Without this, reverse_comm(Pair*) falls back to host.
+  this->reverse_comm_device = 1;
 }
 
 /* ----------------------------------------------------------------------
@@ -284,12 +287,28 @@ void PairAllegroKokkos<nequip_mode>::compute(int eflag_in, int vflag_in)
   input.insert("pos", pos_tensor);
   input.insert("edge_index", edges_tensor);
   input.insert("atom_types", ij2type_tensor);
-  //std::cout << "NequIP model input:\n";
-  //std::cout << "pos:\n" << pos_tensor.cpu() << "\n";
-  //std::cout << "edge_index:\n" << edges_tensor.cpu() << "\n";
-  //std::cout << "atom_types:\n" << ij2type_tensor.cpu() << "\n";
+
+  if (this->is_multirank) {
+    // The multirank model also consumes `cell`, a zero `edge_cell_shift` (ghost positions are
+    // real -> no periodic reconstruction), and `num_local_ghost_atoms` (drives the owned-energy
+    // mask). The per-layer `ghost_exchange` op fired from inside the model reaches this pair via
+    // the thread-local bridge -> CommKokkos device exchange.
+    torch::Tensor cell_tensor = this->get_cell().unsqueeze(0).to(this->device);
+    torch::Tensor shift_tensor = torch::zeros(
+        {max_edges, 3}, torch::TensorOptions().dtype(this->inputtorchtype).device(this->device));
+    torch::Tensor nlg_tensor =
+        torch::tensor({static_cast<int64_t>(this->atom->nlocal),
+                       static_cast<int64_t>(this->atom->nghost)},
+                      torch::TensorOptions().dtype(torch::kInt64))
+            .to(this->device);
+    input.insert("cell", cell_tensor);
+    input.insert("edge_cell_shift", shift_tensor);
+    input.insert("num_local_ghost_atoms", nlg_tensor);
+    LAMMPS_NS::active_nequip_bridge = this;
+  }
 
   auto output = this->call(input);
+  if (this->is_multirank) LAMMPS_NS::active_nequip_bridge = nullptr;
   torch::Tensor forces_tensor = output.at("forces");
   torch::Tensor atomic_energy_tensor = output.at("atomic_energy");
 
@@ -407,7 +426,123 @@ void PairAllegroKokkos<nequip_mode>::init_style()
 
 
 
+/* ----------------------------------------------------------------------
+   Route 2b device-resident per-layer feature halo (M6).
+   Mirrors the mliap/kk pattern: gather/scatter feature rows of the on-GPU tensor by the device
+   sendlist, exchanged through CommKokkos::*_comm_device (GPU-aware MPI on device buffers). No
+   host staging, no explicit torch<->Kokkos fence (the kernels run on the device stream, same as
+   mliap/kk). Features are F64; we index the raw device pointer directly.
+------------------------------------------------------------------------- */
+
+template<bool nequip_mode>
+torch::Tensor PairAllegroKokkos<nequip_mode>::forward_exchange_t(const torch::Tensor &node_features)
+{
+  // Stay on the GPU. Exchange in F64 (the comm buffer is double); convert back to the model's
+  // feature dtype after. `.clone()` guarantees a private, contiguous buffer (the op is functional)
+  // even when the input is already contiguous F64.
+  auto f = node_features.to(torch::kDouble).contiguous().clone();
+  const int64_t ntot = f.size(0);
+  const int F = ntot > 0 ? static_cast<int>(f.numel() / ntot) : 0;
+  this->comm_forward = F;
+  exch_ptr_kk = f.data_ptr<double>();
+  exch_hold = f;
+  exch_ncol_kk = F;
+  this->comm->forward_comm(this, F);   // -> CommKokkos::forward_comm_device -> pack/unpack below
+  exch_ptr_kk = nullptr;
+  exch_ncol_kk = 0;
+  exch_hold = torch::Tensor();
+  return f.to(node_features.scalar_type()).view_as(node_features);
+}
+
+template<bool nequip_mode>
+torch::Tensor PairAllegroKokkos<nequip_mode>::reverse_exchange_t(const torch::Tensor &grad_features)
+{
+  auto g = grad_features.to(torch::kDouble).contiguous().clone();
+  const int64_t ntot = g.size(0);
+  const int F = ntot > 0 ? static_cast<int>(g.numel() / ntot) : 0;
+  this->comm_reverse = F;
+  exch_ptr_kk = g.data_ptr<double>();
+  exch_hold = g;
+  exch_ncol_kk = F;
+  this->comm->reverse_comm(this, F);   // accumulates ghost-row grads onto owners (atomic +=)
+  // dy[ghost] = 0: the forward halo output's ghost rows do not depend on ghost inputs.
+  const int nloc = this->atom->nlocal;
+  const int nrow = static_cast<int>(ntot);
+  double *p = exch_ptr_kk;
+  Kokkos::parallel_for("nequip:zero_ghost_grad",
+      Kokkos::RangePolicy<DeviceType>(nloc, nrow), KOKKOS_LAMBDA(const int i) {
+        for (int c = 0; c < F; c++) p[(long) i * F + c] = 0.0;
+      });
+  exch_ptr_kk = nullptr;
+  exch_ncol_kk = 0;
+  exch_hold = torch::Tensor();
+  return g.to(grad_features.scalar_type()).view_as(grad_features);
+}
+
+template<bool nequip_mode>
+int PairAllegroKokkos<nequip_mode>::pack_forward_comm_kokkos(
+    int n, DAT::tdual_int_1d k_sendlist, DAT::tdual_double_1d &k_buf, int /*pbc_flag*/, int * /*pbc*/)
+{
+  auto idx = k_sendlist.template view<DeviceType>();
+  auto buf = k_buf.template view<DeviceType>();
+  const int F = exch_ncol_kk;
+  double *p = exch_ptr_kk;
+  Kokkos::parallel_for("nequip:pack_fwd", Kokkos::RangePolicy<DeviceType>(0, n * F),
+      KOKKOS_LAMBDA(const int s) {
+        const int i = s / F, c = s % F;
+        buf(s) = p[(long) idx(i) * F + c];
+      });
+  k_buf.template modify<DeviceType>();
+  return n * F;
+}
+
+template<bool nequip_mode>
+void PairAllegroKokkos<nequip_mode>::unpack_forward_comm_kokkos(
+    int n, int first, DAT::tdual_double_1d &k_buf)
+{
+  auto buf = k_buf.template view<DeviceType>();
+  const int F = exch_ncol_kk;
+  double *p = exch_ptr_kk;
+  Kokkos::parallel_for("nequip:unpack_fwd", Kokkos::RangePolicy<DeviceType>(0, n * F),
+      KOKKOS_LAMBDA(const int s) {
+        const int i = s / F, c = s % F;
+        p[(long) (first + i) * F + c] = buf(s);
+      });
+}
+
+template<bool nequip_mode>
+int PairAllegroKokkos<nequip_mode>::pack_reverse_comm_kokkos(
+    int n, int first, DAT::tdual_double_1d &k_buf)
+{
+  auto buf = k_buf.template view<DeviceType>();
+  const int F = exch_ncol_kk;
+  double *p = exch_ptr_kk;
+  Kokkos::parallel_for("nequip:pack_rev", Kokkos::RangePolicy<DeviceType>(0, n * F),
+      KOKKOS_LAMBDA(const int s) {
+        const int i = s / F, c = s % F;
+        buf(s) = p[(long) (first + i) * F + c];
+      });
+  k_buf.template modify<DeviceType>();
+  return n * F;
+}
+
+template<bool nequip_mode>
+void PairAllegroKokkos<nequip_mode>::unpack_reverse_comm_kokkos(
+    int n, DAT::tdual_int_1d k_recvlist, DAT::tdual_double_1d &k_buf)
+{
+  auto idx = k_recvlist.template view<DeviceType>();
+  auto buf = k_buf.template view<DeviceType>();
+  const int F = exch_ncol_kk;
+  double *p = exch_ptr_kk;
+  Kokkos::parallel_for("nequip:unpack_rev", Kokkos::RangePolicy<DeviceType>(0, n * F),
+      KOKKOS_LAMBDA(const int s) {
+        const int i = s / F, c = s % F;
+        Kokkos::atomic_add(&p[(long) idx(i) * F + c], buf(s));
+      });
+}
+
 namespace LAMMPS_NS {
 template class PairAllegroKokkos<false>;
+template class PairAllegroKokkos<true>;
 }
 
