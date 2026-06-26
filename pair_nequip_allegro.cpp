@@ -203,8 +203,14 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::init_style()
   // Single-rank pair_nequip cannot be decomposed across ranks.
   if (nequip_mode && comm->nprocs > 1)
     error->all(FLERR,
-               "pair_nequip with this (single-rank) model only works with a single MPI rank; "
-               "compile a multi-rank model (target pair_nequip_multirank) for domain decomposition");
+               "pair_style nequip: this model is single-rank (it does not declare the "
+               "`num_local_ghost_atoms` input), but you are running on {} MPI ranks. Re-compile "
+               "it for multi-GPU:\n"
+               "  nequip-compile <model>.nequip.zip <out>.nequip.pt2 --mode aotinductor "
+               "--target pair_nequip --device cuda --modifiers enable_PairNequIPGhostExchange\n"
+               "(append enable_OpenEquivariance for the OEQ kernels; a stale packaged model is "
+               "auto-refreshed by nequip-compile). Otherwise run on a single MPI rank.",
+               comm->nprocs);
 
   // Request a full neighbor list.
   if (lmp->kokkos) {
@@ -510,6 +516,18 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::coeff(int narg,
     // signals the per-layer ghost-exchange path (this pair installs the real exchange ops).
     is_multirank = std::find(model_input_order.begin(), model_input_order.end(),
                              std::string("num_local_ghost_atoms")) != model_input_order.end();
+    // Cross-check against the `pair_nequip_multirank` stamp `nequip-compile` writes (newer
+    // models only). A present-but-disagreeing stamp means the model was compiled/packaged
+    // inconsistently (e.g. the modifier was requested but the input got stripped) -- surface it
+    // rather than silently trusting one signal. Absent stamp (older model) => no warning.
+    {
+      auto it = metadata.find("pair_nequip_multirank");
+      if (it != metadata.end() && (it->second == "1") != is_multirank && comm->me == 0)
+        std::cerr << "WARNING (NequIP): model metadata pair_nequip_multirank=" << it->second
+                  << " disagrees with its declared inputs ("
+                  << (is_multirank ? "multi-rank" : "single-rank")
+                  << "); trusting the inputs. Re-compile the model to resolve.\n";
+    }
     if (is_multirank && comm->me == 0)
       std::cout << "NequIP: multi-rank model detected -- per-layer ghost exchange enabled\n";
 #endif
