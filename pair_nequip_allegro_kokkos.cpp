@@ -38,6 +38,14 @@
 #include <c10/cuda/CUDACachingAllocator.h>
 #endif
 
+#ifdef KOKKOS_ENABLE_HIP
+// M10 async-overlap: run the AOT model on a dedicated torch stream so the per-layer halo
+// (`Comm::forward_comm` on the Kokkos comm stream) overlaps the owned-source TP-scatter.
+#include <c10/hip/HIPStream.h>
+#include <c10/hip/HIPGuard.h>
+#include <hip/hip_runtime.h>
+#endif
+
 using namespace LAMMPS_NS;
 using namespace MathConst;
 namespace Kokkos {
@@ -82,6 +90,13 @@ PairAllegroKokkos<nequip_mode>::~PairAllegroKokkos()
     this->eatom = NULL;
     this->vatom = NULL;
   }
+#ifdef KOKKOS_ENABLE_HIP
+  // release the M10 async-overlap stream + events (created lazily in `ensure_m10_async_state`)
+  if (m10_event_ready) hipEventDestroy((hipEvent_t) m10_event_ready);
+  if (m10_event_done) hipEventDestroy((hipEvent_t) m10_event_done);
+  if (m10_model_stream) delete static_cast<c10::hip::HIPStream *>(m10_model_stream);
+  m10_event_ready = m10_event_done = m10_model_stream = nullptr;
+#endif
 }
 
 /* ---------------------------------------------------------------------- */
@@ -371,7 +386,27 @@ void PairAllegroKokkos<nequip_mode>::compute(int eflag_in, int vflag_in)
     LAMMPS_NS::active_nequip_bridge = this;
   }
 
+#ifdef KOKKOS_ENABLE_HIP
+  // M10 async overlap: run the AOT model on a dedicated torch stream so the per-layer halo
+  // (`Comm::forward_comm` on the Kokkos comm stream) overlaps the owned-source TP-scatter. The
+  // model inputs were built on the previous (default) torch stream + the Kokkos comm stream;
+  // drain both before the model reads them on the dedicated stream (one-off per step, cheap).
+  c10::optional<c10::hip::HIPStreamGuard> m10_guard;
+  if (this->is_async) {
+    this->ensure_m10_async_state();
+    hipStreamSynchronize(c10::hip::getCurrentHIPStream().stream());
+    DeviceType().fence();
+    m10_guard.emplace(*static_cast<c10::hip::HIPStream *>(m10_model_stream));
+  }
+#endif
   auto output = this->call(input);
+#ifdef KOKKOS_ENABLE_HIP
+  if (this->is_async) {
+    // make the model outputs (produced on the dedicated stream) visible to the Kokkos force-store
+    // reduce below (which runs on the comm stream) before the guard restores the previous stream.
+    hipStreamSynchronize(static_cast<c10::hip::HIPStream *>(m10_model_stream)->stream());
+  }
+#endif
   if (this->is_multirank) LAMMPS_NS::active_nequip_bridge = nullptr;
   torch::Tensor forces_tensor = output.at("forces");
   torch::Tensor atomic_energy_tensor = output.at("atomic_energy");
@@ -511,12 +546,116 @@ torch::Tensor PairAllegroKokkos<nequip_mode>::forward_exchange_t(const torch::Te
   exch_ptr_kk = f.data_ptr<double>();
   exch_hold = f;
   exch_ncol_kk = F;
+#ifdef KOKKOS_ENABLE_HIP
+  // Cross-stream safety: in the normal (non-async) path the model and the Kokkos comm share one
+  // stream, so `f` (cloned on the model stream) is already ordered before `forward_comm`'s pack.
+  // But if a single-op (`ghost_exchange`) model is ever run under the async model-stream guard,
+  // the two streams differ and we must order them explicitly (blocking; no overlap). Zero overhead
+  // when the streams coincide.
+  hipStream_t fx_cur = c10::hip::getCurrentHIPStream().stream();
+  hipStream_t fx_k = DeviceType().hip_stream();
+  hipEvent_t fx_ev = nullptr;
+  if (fx_cur != fx_k) {
+    hipEventCreateWithFlags(&fx_ev, hipEventDisableTiming);
+    hipEventRecord(fx_ev, fx_cur);            // `f` produced on the model stream
+    hipStreamWaitEvent(fx_k, fx_ev, 0);       // comm stream waits for it
+  }
+#endif
   this->comm->forward_comm(this, F);   // -> CommKokkos::forward_comm_device -> pack/unpack below
+#ifdef KOKKOS_ENABLE_HIP
+  if (fx_cur != fx_k) {
+    hipEventRecord(fx_ev, fx_k);              // ghost rows written on the comm stream
+    hipStreamWaitEvent(fx_cur, fx_ev, 0);     // model stream waits before it reads them
+    hipEventDestroy(fx_ev);
+  }
+#endif
   exch_ptr_kk = nullptr;
   exch_ncol_kk = 0;
   exch_hold = torch::Tensor();
   return f.to(node_features.scalar_type()).view_as(node_features);
 }
+
+/* ----------------------------------------------------------------------
+   M10 async-overlap split of the forward halo. `start` records a "owned features ready" event on
+   the model stream (before the owned-source TP-scatter is launched); `finish` runs the halo on the
+   Kokkos comm stream so it overlaps that TP. See the design in M10_async_overlap_design.md.
+------------------------------------------------------------------------- */
+#ifdef KOKKOS_ENABLE_HIP
+template<bool nequip_mode>
+void PairAllegroKokkos<nequip_mode>::ensure_m10_async_state()
+{
+  if (m10_model_stream != nullptr) return;
+  // Dedicated, non-default torch stream from the pool: distinct from the Kokkos comm stream
+  // (`DeviceType().hip_stream()`), so the owned-source TP-scatter (run on this stream) and the
+  // deferred halo (`Comm::forward_comm` on the comm stream) overlap instead of serializing.
+  m10_model_stream = new c10::hip::HIPStream(c10::hip::getStreamFromPool());
+  hipEvent_t ev_ready, ev_done;
+  hipEventCreateWithFlags(&ev_ready, hipEventDisableTiming);
+  hipEventCreateWithFlags(&ev_done, hipEventDisableTiming);
+  m10_event_ready = (void *) ev_ready;
+  m10_event_done = (void *) ev_done;
+}
+
+template<bool nequip_mode>
+torch::Tensor PairAllegroKokkos<nequip_mode>::forward_exchange_start_t(const torch::Tensor &node_features)
+{
+  // Phase 1: clone to a private buffer that the owned-source TP-scatter (next, on the model stream)
+  // and the deferred halo (`finish`, on the comm stream) both read, and record the "owned features
+  // ready" event on the model stream -- BEFORE that TP is launched. `finish` makes the comm stream
+  // wait on this event, so the halo starts without waiting for the owned-edge TP (the overlap).
+  ensure_m10_async_state();
+  auto C = node_features.contiguous().clone();
+  hipEventRecord((hipEvent_t) m10_event_ready, c10::hip::getCurrentHIPStream().stream());
+  return C;
+}
+
+template<bool nequip_mode>
+torch::Tensor PairAllegroKokkos<nequip_mode>::forward_exchange_finish_t(const torch::Tensor &node_features)
+{
+  // Phase 2: complete the halo on the Kokkos comm stream (overlapping the owned-source TP still in
+  // flight on the model stream). `node_features` is the `start` clone (owned rows valid, ghost rows
+  // zero). Copy it to a fresh output ON THE COMM STREAM (gated on the ready event, so the copy does
+  // not wait for the owned-edge TP), then `forward_comm` fills the ghost rows -- all on the comm
+  // stream. Functional (returns the new output), so the in-model force/backward pass matches the
+  // single-op path.
+  ensure_m10_async_state();
+  auto Cf = node_features.to(torch::kDouble).contiguous();
+  const int64_t ntot = Cf.size(0);
+  const int F = ntot > 0 ? static_cast<int>(Cf.numel() / ntot) : 0;
+  auto out = torch::empty_like(Cf);
+
+  hipStream_t kstream = DeviceType().hip_stream();
+  hipStream_t mstream = c10::hip::getCurrentHIPStream().stream();
+  // comm stream waits for the model stream's production of the `start` clone (the pre-owned-TP
+  // event), NOT for the owned-edge TP itself
+  hipStreamWaitEvent(kstream, (hipEvent_t) m10_event_ready, 0);
+  // copy owned + zero-ghost rows on the comm stream; the halo below overwrites the ghost rows
+  hipMemcpyAsync(out.data_ptr<double>(), Cf.data_ptr<double>(),
+                 static_cast<size_t>(Cf.numel()) * sizeof(double),
+                 hipMemcpyDeviceToDevice, kstream);
+  this->comm_forward = F;
+  exch_ptr_kk = out.data_ptr<double>();
+  exch_hold = out;
+  exch_ncol_kk = F;
+  this->comm->forward_comm(this, F);   // pack/unpack on the Kokkos comm stream; fills ghost rows
+  exch_ptr_kk = nullptr;
+  exch_ncol_kk = 0;
+  exch_hold = torch::Tensor();
+  // model stream (next op: ghost-source TP-scatter) waits for the halo to land
+  hipEventRecord((hipEvent_t) m10_event_done, kstream);
+  hipStreamWaitEvent(mstream, (hipEvent_t) m10_event_done, 0);
+  return out.to(node_features.scalar_type()).view_as(node_features);
+}
+#else
+template<bool nequip_mode>
+void PairAllegroKokkos<nequip_mode>::ensure_m10_async_state() {}
+template<bool nequip_mode>
+torch::Tensor PairAllegroKokkos<nequip_mode>::forward_exchange_start_t(const torch::Tensor &node_features)
+{ return node_features.clone(); }
+template<bool nequip_mode>
+torch::Tensor PairAllegroKokkos<nequip_mode>::forward_exchange_finish_t(const torch::Tensor &node_features)
+{ return forward_exchange_t(node_features); }
+#endif
 
 template<bool nequip_mode>
 torch::Tensor PairAllegroKokkos<nequip_mode>::reverse_exchange_t(const torch::Tensor &grad_features)
@@ -528,6 +667,20 @@ torch::Tensor PairAllegroKokkos<nequip_mode>::reverse_exchange_t(const torch::Te
   exch_ptr_kk = g.data_ptr<double>();
   exch_hold = g;
   exch_ncol_kk = F;
+#ifdef KOKKOS_ENABLE_HIP
+  // Cross-stream safety for the in-model backward (force pass): under the async model-stream guard
+  // `g` is cloned on the model stream but `reverse_comm` + the zero-ghost kernel run on the Kokkos
+  // comm stream. Order them (blocking; the reverse halo is not overlapped until Stage 3). Zero
+  // overhead when the two streams coincide (the non-async path).
+  hipStream_t rx_cur = c10::hip::getCurrentHIPStream().stream();
+  hipStream_t rx_k = DeviceType().hip_stream();
+  hipEvent_t rx_ev = nullptr;
+  if (rx_cur != rx_k) {
+    hipEventCreateWithFlags(&rx_ev, hipEventDisableTiming);
+    hipEventRecord(rx_ev, rx_cur);            // `g` produced on the model stream
+    hipStreamWaitEvent(rx_k, rx_ev, 0);       // comm stream waits before reverse_comm reads it
+  }
+#endif
   this->comm->reverse_comm(this, F);   // accumulates ghost-row grads onto owners (atomic +=)
   // dy[ghost] = 0: the forward halo output's ghost rows do not depend on ghost inputs.
   const int nloc = this->atom->nlocal;
@@ -537,6 +690,13 @@ torch::Tensor PairAllegroKokkos<nequip_mode>::reverse_exchange_t(const torch::Te
       Kokkos::RangePolicy<DeviceType>(nloc, nrow), KOKKOS_LAMBDA(const int i) {
         for (int c = 0; c < F; c++) p[(long) i * F + c] = 0.0;
       });
+#ifdef KOKKOS_ENABLE_HIP
+  if (rx_cur != rx_k) {
+    hipEventRecord(rx_ev, rx_k);              // grads written on the comm stream
+    hipStreamWaitEvent(rx_cur, rx_ev, 0);     // model stream waits before it reads them
+    hipEventDestroy(rx_ev);
+  }
+#endif
   exch_ptr_kk = nullptr;
   exch_ncol_kk = 0;
   exch_hold = torch::Tensor();

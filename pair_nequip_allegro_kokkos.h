@@ -50,6 +50,11 @@ class PairAllegroKokkos : public PairNequIPAllegro<nequip_mode>, public KokkosBa
   // Bridge overrides: keep features ON the GPU, exchange via CommKokkos::*_comm_device.
   torch::Tensor forward_exchange_t(const torch::Tensor &node_features) override;
   torch::Tensor reverse_exchange_t(const torch::Tensor &grad_features) override;
+  // === M10 async-overlap split of the forward halo ===
+  // `start` records the "owned features ready" event on the model stream; `finish` runs the halo
+  // on the Kokkos comm stream so it overlaps the owned-source TP-scatter in between.
+  torch::Tensor forward_exchange_start_t(const torch::Tensor &node_features) override;
+  torch::Tensor forward_exchange_finish_t(const torch::Tensor &node_features) override;
   // KokkosBase device comm callbacks: gather/scatter feature rows of the on-GPU tensor.
   int pack_forward_comm_kokkos(int, DAT::tdual_int_1d, DAT::tdual_double_1d &, int, int *) override;
   void unpack_forward_comm_kokkos(int, int, DAT::tdual_double_1d &) override;
@@ -105,6 +110,16 @@ class PairAllegroKokkos : public PairNequIPAllegro<nequip_mode>, public KokkosBa
   double *exch_ptr_kk = nullptr;   // device ptr to the live [ntotal_padded, F] feature buffer
   torch::Tensor exch_hold;         // keeps that tensor's storage alive across the comm call
   int exch_ncol_kk = 0;            // per-node feature width F for the in-flight exchange
+
+  // === M10 async-overlap state (HIP) ===
+  // A dedicated, non-default torch stream the AOT model runs on (set in `compute` for is_async),
+  // so the per-layer halo `Comm::forward_comm` on the Kokkos comm stream overlaps the owned-source
+  // TP-scatter on this stream. Two events synchronize the two streams across the `start`/`finish`
+  // split. Stored as `void*` to keep HIP/c10 types out of this header; created lazily.
+  void *m10_model_stream = nullptr;   // c10::hip::HIPStream* (heap)
+  void *m10_event_ready = nullptr;    // hipEvent_t: owned features ready (recorded in `start`)
+  void *m10_event_done = nullptr;     // hipEvent_t: halo complete (recorded in `finish`)
+  void ensure_m10_async_state();      // lazily create the stream + events
 
 
 

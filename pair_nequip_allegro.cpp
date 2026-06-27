@@ -90,6 +90,19 @@ torch::Tensor ghost_exchange_reverse_impl(const torch::Tensor &grad_features) {
   if (bridge == nullptr) return grad_features.clone();
   return bridge->reverse_exchange_t(grad_features);
 }
+// M10 async-overlap split of the forward halo (see the bridge declaration). `start` records the
+// "owned features ready" marker (no comm); `finish` runs the deferred halo on a comm stream that
+// overlaps the owned-source TP-scatter. Absent a LAMMPS comm context both are the identity.
+torch::Tensor ghost_exchange_start_impl(const torch::Tensor &node_features) {
+  auto *bridge = LAMMPS_NS::active_nequip_bridge;
+  if (bridge == nullptr) return node_features.clone();
+  return bridge->forward_exchange_start_t(node_features);
+}
+torch::Tensor ghost_exchange_finish_impl(const torch::Tensor &node_features) {
+  auto *bridge = LAMMPS_NS::active_nequip_bridge;
+  if (bridge == nullptr) return node_features.clone();
+  return bridge->forward_exchange_finish_t(node_features);
+}
 }    // namespace
 
 // Define the ops in the LAMMPS runtime process: the compiled `.pt2` looks them up by name in the
@@ -99,10 +112,15 @@ torch::Tensor ghost_exchange_reverse_impl(const torch::Tensor &grad_features) {
 TORCH_LIBRARY(nequip_lammps, m) {
   m.def("ghost_exchange(Tensor node_features) -> Tensor");
   m.def("ghost_exchange_reverse(Tensor grad_features) -> Tensor");
+  // M10 async-overlap forward halo (split of `ghost_exchange`); schema mirrors it.
+  m.def("ghost_exchange_start(Tensor node_features) -> Tensor");
+  m.def("ghost_exchange_finish(Tensor node_features) -> Tensor");
 }
 TORCH_LIBRARY_IMPL(nequip_lammps, CompositeExplicitAutograd, m) {
   m.impl("ghost_exchange", &ghost_exchange_impl);
   m.impl("ghost_exchange_reverse", &ghost_exchange_reverse_impl);
+  m.impl("ghost_exchange_start", &ghost_exchange_start_impl);
+  m.impl("ghost_exchange_finish", &ghost_exchange_finish_impl);
 }
 
 template <bool nequip_mode> PairNequIPAllegro<nequip_mode>::PairNequIPAllegro(LAMMPS *lmp) : Pair(lmp)

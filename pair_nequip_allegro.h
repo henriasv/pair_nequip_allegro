@@ -50,6 +50,20 @@ struct NequIPGhostExchangeBridge {
   // Reverse (in-model autograd / force pass): accumulate ghost-row grads onto owners, zero ghosts.
   virtual torch::Tensor reverse_exchange_t(const torch::Tensor &grad_features) = 0;
 
+  // === M10 async-overlap split of the forward halo ===
+  // `start` returns the features unchanged (ghost rows still zero) but records a "owned features
+  // ready" marker on the model stream, BEFORE the owned-source TP-scatter is launched; `finish`
+  // runs the halo on a comm stream that overlaps that TP and returns the ghost-filled features.
+  // Default (plain / host-staged pair, or any non-overlapping impl): `start` is a clone and
+  // `finish` is the blocking `forward_exchange_t` — correct, just not overlapped. The Kokkos pair
+  // overrides both with the device-stream + event implementation.
+  virtual torch::Tensor forward_exchange_start_t(const torch::Tensor &node_features) {
+    return node_features.clone();
+  }
+  virtual torch::Tensor forward_exchange_finish_t(const torch::Tensor &node_features) {
+    return forward_exchange_t(node_features);
+  }
+
  protected:
   // Non-virtual, protected destructor: instances are only ever owned/deleted through `Pair*`
   // (LAMMPS owns the pair), never through this mix-in pointer, so no virtual destructor is needed.
