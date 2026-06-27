@@ -129,6 +129,10 @@ class PairNequIPAllegro : public Pair, public NequIPGhostExchangeBridge {
   // multi-rank native pair_nequip: model takes `num_local_ghost_atoms` and the per-layer
   // ghost exchange runs across ranks (set in `coeff` from the model's declared input order).
   bool is_multirank = false;
+  // async-overlap multi-rank pair_nequip: model also takes `num_owned_edges_marker`; the Kokkos
+  // pair partitions the edge list owned-source-first and feeds that marker so the model can
+  // overlap the owned-src TP-scatter with the in-flight feature halo (set alongside is_multirank).
+  bool is_async = false;
   // bridge state for the in-flight feature exchange (valid during a `comm->*_comm(this, F)`)
   double *exch_buf = nullptr;   // [ntotal * exch_ncol], row-major (atom-major)
   int exch_ncol = 0;            // flattened per-node feature width F for the current layer

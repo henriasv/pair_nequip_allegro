@@ -89,6 +89,10 @@ class PairAllegroKokkos : public PairNequIPAllegro<nequip_mode>, public KokkosBa
   IntView1D d_type_mapper;
   LongView1D d_ij2type;
   LongView2D d_edges;
+  // async-overlap (is_async): edge list re-partitioned owned-source-first into this scratch
+  // buffer (real owned-src edges, then real ghost-src edges, then the fake pad edges) so the
+  // model can slice the owned-src TP-scatter off the front. Same shape as `d_edges`.
+  LongView2D d_edges_async;
   InputFloatView2D d_xfloat;
 
   View2D d_cutoff_matrix;

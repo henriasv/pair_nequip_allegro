@@ -266,8 +266,54 @@ void PairAllegroKokkos<nequip_mode>::compute(int eflag_in, int vflag_in)
       d_edges(1, i) = max_atoms-1;
   });
 
+  // === async-overlap edge partition (is_async) ===
+  // Reorder the REAL edges `[0, nedges)` owned-source-first (owned-src = `edge_src = d_edges(1,e)
+  // < nlocal`) into the `d_edges_async` scratch, then copy the fake pad edges `[nedges, max_edges)`
+  // unchanged (their src `max_atoms-1 >= nlocal` makes them legitimately ghost-side). The model
+  // then slices the per-edge tensors at `n_owned_edges`: the owned-src TP-scatter (needing no
+  // freshly-exchanged ghost features) runs while the halo is in flight. The partition uses two
+  // atomic cursors (order within each partition is irrelevant -- scatter-add is commutative).
+  long *edges_data = d_edges.data();
+  long edges_stride = d_edges.extent(1);
+  int n_owned_edges = 0;
+  if (this->is_async) {
+    if (this->d_edges_async.extent(1) != d_edges.extent(1)) {
+      this->d_edges_async = decltype(this->d_edges_async)();
+      this->d_edges_async = decltype(this->d_edges_async)("Allegro: edges_async", 2, d_edges.extent(1));
+    }
+    auto d_edges_async = this->d_edges_async;
+    const int nloc = nlocal;
+    Kokkos::parallel_reduce("Allegro: count owned edges",
+        Kokkos::RangePolicy<DeviceType>(0, nedges),
+        KOKKOS_LAMBDA(const int e, int &sum){ if (d_edges(1, e) < nloc) sum++; },
+        n_owned_edges);
+    Kokkos::View<int*, DeviceType> cursors("Allegro: part cursors", 2);
+    auto h_cursors = Kokkos::create_mirror_view(cursors);
+    h_cursors(0) = 0;             // owned-src cursor -> fills [0, n_owned_edges)
+    h_cursors(1) = n_owned_edges; // ghost-src cursor -> fills [n_owned_edges, nedges)
+    Kokkos::deep_copy(cursors, h_cursors);
+    Kokkos::parallel_for("Allegro: partition edges owned-first",
+        Kokkos::RangePolicy<DeviceType>(0, nedges), KOKKOS_LAMBDA(const int e){
+          const int dst = d_edges(0, e);
+          const int src = d_edges(1, e);
+          const int slot = (src < nloc)
+              ? Kokkos::atomic_fetch_add(&cursors(0), 1)
+              : Kokkos::atomic_fetch_add(&cursors(1), 1);
+          d_edges_async(0, slot) = dst;
+          d_edges_async(1, slot) = src;
+        });
+    const int max_edges_l = d_edges.extent(1);
+    Kokkos::parallel_for("Allegro: copy fake edges async",
+        Kokkos::RangePolicy<DeviceType>(nedges, max_edges_l), KOKKOS_LAMBDA(const int e){
+          d_edges_async(0, e) = d_edges(0, e);
+          d_edges_async(1, e) = d_edges(1, e);
+        });
+    edges_data = this->d_edges_async.data();
+    edges_stride = this->d_edges_async.extent(1);
+  }
+
   torch::Tensor ij2type_tensor = torch::from_blob(d_ij2type.data(), {max_atoms}, torch::TensorOptions().dtype(torch::kInt64).device(this->device));
-  torch::Tensor edges_tensor = torch::from_blob(d_edges.data(), {2,max_edges}, {(long) d_edges.extent(1),1}, torch::TensorOptions().dtype(torch::kInt64).device(this->device));
+  torch::Tensor edges_tensor = torch::from_blob(edges_data, {2,max_edges}, {edges_stride,1}, torch::TensorOptions().dtype(torch::kInt64).device(this->device));
   torch::Tensor pos_tensor = torch::from_blob(d_xfloat.data(), {max_atoms,3}, {3,1}, torch::TensorOptions().device(this->device).dtype(this->inputtorchtype));
 
   if (this->debug_mode) {
@@ -311,6 +357,17 @@ void PairAllegroKokkos<nequip_mode>::compute(int eflag_in, int vflag_in)
     input.insert("edge_cell_shift", shift_tensor);
     input.insert("num_local_ghost_atoms", nlg_tensor);
     input.insert("num_local_nodes_marker", marker_tensor);
+    if (this->is_async) {
+      // owned-src-edge marker `(n_owned_edges,)`: carries the backed split point at which the
+      // model slices the per-edge tensors (the edge list above was partitioned owned-src-first).
+      // Contents unused -- only the size-0 dim. `call()` places it positionally via the model's
+      // declared `nequip_aoti_inputs` order.
+      torch::Tensor owned_edges_marker =
+          torch::zeros({static_cast<int64_t>(n_owned_edges)},
+                       torch::TensorOptions().dtype(torch::kInt64))
+              .to(this->device);
+      input.insert("num_owned_edges_marker", owned_edges_marker);
+    }
     LAMMPS_NS::active_nequip_bridge = this;
   }
 

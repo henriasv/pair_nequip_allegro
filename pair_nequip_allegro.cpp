@@ -530,6 +530,28 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::coeff(int narg,
     }
     if (is_multirank && comm->me == 0)
       std::cout << "NequIP: multi-rank model detected -- per-layer ghost exchange enabled\n";
+
+    // async-overlap multi-rank pair_nequip: the model additionally declares
+    // `num_owned_edges_marker`, signalling the owned-src/ghost-src TP-scatter split. This pair
+    // then partitions the edge list owned-source-first and feeds that marker. Detected from the
+    // declared inputs (authoritative) and cross-checked against the `pair_nequip_multirank_async`
+    // stamp, exactly as the multirank flag above. An async model is necessarily multi-rank.
+    is_async = std::find(model_input_order.begin(), model_input_order.end(),
+                         std::string("num_owned_edges_marker")) != model_input_order.end();
+    {
+      auto it = metadata.find("pair_nequip_multirank_async");
+      if (it != metadata.end() && (it->second == "1") != is_async && comm->me == 0)
+        std::cerr << "WARNING (NequIP): model metadata pair_nequip_multirank_async=" << it->second
+                  << " disagrees with its declared inputs ("
+                  << (is_async ? "async" : "non-async")
+                  << "); trusting the inputs. Re-compile the model to resolve.\n";
+    }
+    if (is_async && !is_multirank && comm->me == 0)
+      std::cerr << "WARNING (NequIP): async-overlap model declares num_owned_edges_marker but not "
+                   "num_local_ghost_atoms; the edge split needs the multi-rank exchange path.\n";
+    if (is_async && comm->me == 0)
+      std::cout << "NequIP: async-overlap model detected -- owned-src/ghost-src TP-scatter split "
+                   "enabled\n";
 #endif
   }
 
