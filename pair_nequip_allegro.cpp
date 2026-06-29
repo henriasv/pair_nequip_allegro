@@ -447,6 +447,32 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::coeff(int narg,
     throw std::runtime_error("Only accepts model paths with extension `.nequip.pth` or `.nequip.pt2`, but found" + model_path);
   }
 
+  // pair_style nequip/allegro cannot be re-initialized within one LAMMPS
+  // process: a 2nd compiled-model (AOTInductor) load re-enters process-global
+  // Torch + custom-op (OEQ) state that does not re-initialize cleanly and
+  // segfaults. Trip cleanly on the 2nd load (e.g. after `clear`) instead of
+  // crashing. The flag is process-scoped (static) and never reset, because the
+  // obstruction is process-global Torch state that outlives the pair object.
+  if (use_aot) {
+    static bool aot_model_loaded_in_process = false;
+    if (aot_model_loaded_in_process)
+      error->all(FLERR,
+        "pair_style nequip/allegro cannot be re-initialized within a single "
+        "LAMMPS process. This is a second compiled-model (AOTInductor) load in "
+        "this process -- most often triggered by 'clear', or by issuing "
+        "'pair_style nequip' a second time. The AOTInductor model and its "
+        "registered Torch custom ops are process-global and do not "
+        "re-initialize cleanly. What to do instead:\n"
+        "  * Many configurations, one model: keep the SAME pair_style/"
+        "pair_coeff and change the system in place (change_box, displace_atoms, "
+        "set, then 'run 0'), or use 'rerun' over a trajectory -- no 'clear' "
+        "needed; any number of 'run' commands is supported. (A scripted EOS is "
+        "a box-scaling loop with one model, not clear/read_data per point.)\n"
+        "  * Genuinely independent setups: run each in its own LAMMPS "
+        "invocation (one process per setup).");
+    aot_model_loaded_in_process = true;
+  }
+
   // Load any custom Torch op libraries the compiled model depends on (e.g. OEQ's
   // libtorch_tp_jit.so) BEFORE loading the model, so their operators are registered.
   load_extra_op_libraries(model_path);
