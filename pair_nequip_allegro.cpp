@@ -664,17 +664,7 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::compute(int efl
   auto input = preprocess();
   // For multi-rank models the per-layer ghost-exchange ops (called from inside the compiled
   // model) reach this pair's Comm through the thread-local bridge; arm it for the model call.
-  if (is_multirank) {
-    active_nequip_bridge = this;
-    static bool m4_diag_done = false;    // one-shot per rank
-    if (!m4_diag_done) {
-      m4_diag_done = true;
-      std::cout << "[M4 rank " << comm->me << "] nlocal=" << atom->nlocal
-                << " nghost=" << atom->nghost << " ntotal=" << ntotal
-                << " device=" << device << " comm_forward=" << comm_forward
-                << std::endl;
-    }
-  }
+  if (is_multirank) active_nequip_bridge = this;
   // evaluate model
   auto output = call(input);
   if (is_multirank) active_nequip_bridge = nullptr;
