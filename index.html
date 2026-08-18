@@ -1,0 +1,659 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-GPU pair_nequip</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Public+Sans:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #FAFAF7;
+    --ink: #1C2321;
+    --muted: #5A6763;
+    --line: #D8DDD9;
+    --accent: #0E7C86;
+    --copper: #A66430;
+    --surface: #F1F2EE;
+    --code-bg: #ECEFEC;
+    --good: #2E7D4F;
+    --warn: #9A6A1B;
+    --bad: #A63A32;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141A19;
+      --ink: #E6EBE8;
+      --muted: #93A09B;
+      --line: #2C3533;
+      --accent: #46B8C2;
+      --copper: #D49463;
+      --surface: #1B2220;
+      --code-bg: #1A211F;
+      --good: #5CBF8A;
+      --warn: #D2A55A;
+      --bad: #DB8078;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141A19;
+    --ink: #E6EBE8;
+    --muted: #93A09B;
+    --line: #2C3533;
+    --accent: #46B8C2;
+    --copper: #D49463;
+    --surface: #1B2220;
+    --code-bg: #1A211F;
+    --good: #5CBF8A;
+    --warn: #D2A55A;
+    --bad: #DB8078;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+    font-size: 1rem;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 1.25rem 5rem;
+  }
+  .page { max-width: 62rem; margin: 0 auto; }
+  header.doc { padding: 3.5rem 0 2rem; border-bottom: 2px solid var(--ink); }
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.9rem;
+  }
+  h1 {
+    font-family: "Zilla Slab", Georgia, serif;
+    font-weight: 700;
+    font-size: clamp(2.1rem, 5vw, 3.1rem);
+    line-height: 1.08;
+    margin: 0 0 1.1rem;
+    text-wrap: balance;
+  }
+  .lede { font-size: 1.08rem; max-width: 64ch; margin: 0 0 1.6rem; }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 0.4rem 2rem;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.8rem; color: var(--muted);
+  }
+  .meta b { color: var(--ink); font-weight: 500; }
+  nav.toc {
+    margin: 1.6rem 0 0;
+    padding: 1rem 0 0;
+    border-top: 1px solid var(--line);
+    font-size: 0.88rem;
+    display: flex; flex-wrap: wrap; gap: 0.3rem 1.6rem;
+  }
+  nav.toc a { color: var(--ink); text-decoration: none; }
+  nav.toc a:hover { color: var(--accent); }
+  nav.toc .n { color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: 0.8em; margin-right: 0.3em; }
+  h2 {
+    font-family: "Zilla Slab", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.6rem;
+    margin: 3.2rem 0 0.8rem;
+    text-wrap: balance;
+  }
+  h2 .no { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 0.55rem; }
+  h3 {
+    font-family: "Zilla Slab", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.18rem;
+    margin: 2rem 0 0.5rem;
+  }
+  h4 {
+    font-size: 0.98rem;
+    margin: 1.4rem 0 0.4rem;
+  }
+  p, li { max-width: 72ch; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.86em; }
+  code { background: var(--code-bg); border-radius: 3px; padding: 0.08em 0.32em; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  .tablewrap { overflow-x: auto; margin: 1.2rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.89rem; }
+  th {
+    font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+    text-align: left; color: var(--muted); font-weight: 700;
+    border-bottom: 2px solid var(--ink);
+    padding: 0.45rem 0.9rem 0.45rem 0;
+  }
+  td { border-bottom: 1px solid var(--line); padding: 0.5rem 0.9rem 0.5rem 0; vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0.5rem; }
+  td code { white-space: nowrap; }
+  .status {
+    display: inline-block;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem; letter-spacing: 0.05em;
+    padding: 0.1rem 0.5rem; border-radius: 999px;
+    border: 1px solid currentColor; white-space: nowrap;
+  }
+  .status.pass { color: var(--good); }
+  .status.pend { color: var(--warn); }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    padding: 0.9rem 1.2rem;
+    margin: 1.4rem 0;
+    max-width: 72ch;
+  }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout p { margin: 0.3rem 0; }
+  figure { margin: 2rem 0; }
+  figcaption { font-size: 0.82rem; color: var(--muted); margin-top: 0.6rem; max-width: 72ch; }
+  .diagram-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; }
+  svg text { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  ul { padding-left: 1.2rem; }
+  li { margin: 0.32rem 0; }
+  .footnote { font-size: 0.85rem; color: var(--muted); }
+  .envgrid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 1rem; margin: 1.2rem 0;
+  }
+  .envcard {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 0.9rem 1.1rem; font-size: 0.86rem;
+  }
+  .envcard h4 { margin: 0 0 0.5rem; font-family: "Zilla Slab", serif; font-size: 1rem; }
+  .envcard dl { margin: 0; }
+  .envcard dt { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.5rem; }
+  .envcard dd { margin: 0.1rem 0 0; font-family: "IBM Plex Mono", monospace; font-size: 0.8rem; overflow-wrap: anywhere; }
+</style>
+</head><body>
+<nav style="border-bottom:1px solid var(--line); background:var(--surface);">
+  <div style="max-width:62rem;margin:0 auto;padding:0.55rem 1.25rem;display:flex;flex-wrap:wrap;gap:0.3rem 1.5rem;font-family:'IBM Plex Mono',monospace;font-size:0.8rem;">
+    <span style="color:var(--muted);">multi-GPU pair_nequip</span>
+    <a href="./" style="color:var(--accent);text-decoration:none;">evaluation</a>
+    <a href="usage.html" style="color:var(--accent);text-decoration:none;">usage</a>
+    <a href="pr-drafts.html" style="color:var(--accent);text-decoration:none;">PR drafts</a>
+    <a href="https://github.com/henriasv/nequip/tree/pr/multigpu" style="color:var(--accent);text-decoration:none;">nequip↗</a>
+    <a href="https://github.com/henriasv/pair_nequip_allegro/tree/pr/multigpu" style="color:var(--accent);text-decoration:none;">pair_nequip_allegro↗</a>
+  </div>
+</nav>
+
+<div class="page">
+<header class="doc">
+  <p class="eyebrow">Pull-request evaluation document</p>
+  <h1>Multi-GPU pair_nequip</h1>
+  <p class="lede">Native multi-rank NequIP inference in LAMMPS via a per-layer ghost-feature
+  exchange compiled into the AOTInductor artifact. This page holds everything needed to evaluate
+  the contribution: the design and its implementation, the exhaustive compatibility audit, the
+  validation record, and the benchmarks with their exact environments.</p>
+  <div class="meta">
+    <span>from <b>Henrik Sveinsson</b></span>
+    <span>date <b>2026-08-18</b></span>
+    <span>branches <b>henriasv/{nequip, pair_nequip_allegro} — pr/multigpu</b></span>
+  </div>
+  <nav class="toc">
+    <a href="#s1"><span class="n">1</span>Scope</a>
+    <a href="#s2"><span class="n">2</span>Design</a>
+    <a href="#s3"><span class="n">3</span>Implementation</a>
+    <a href="#s4"><span class="n">4</span>Compatibility</a>
+    <a href="#s5"><span class="n">5</span>Validation</a>
+    <a href="#s6"><span class="n">6</span>Benchmarks</a>
+    <a href="#s7"><span class="n">7</span>Merge path</a>
+  </nav>
+</header>
+
+<h2 id="s1"><span class="no">1</span>Scope and how to review</h2>
+<p>Upstream <code>pair_style nequip</code> is restricted to one MPI rank: a message-passing model
+needs features of atoms owned by neighboring ranks at <em>every</em> interaction layer, not just
+a geometric halo at the input. This work removes the restriction natively — the compiled model
+itself performs a distributed halo exchange of node features between layers — so NequIP
+(including OAM-family foundation models) runs LAMMPS-domain-decomposed across GPUs with the
+standard <code>pair_style</code> machinery: no server processes, no Python in the MD loop.</p>
+<div class="tablewrap"><table>
+  <tr><th>Repository</th><th>Branch</th><th>Delta vs upstream <code>main</code></th><th>Touches</th></tr>
+  <tr><td><code>henriasv/nequip</code></td><td><code>pr/multigpu</code></td><td class="num">+1134 / −18</td><td>17 files (2 new): compile target, nn modules, packaging, docs page, regression test</td></tr>
+  <tr><td><code>henriasv/pair_nequip_allegro</code></td><td><code>pr/multigpu</code></td><td class="num">+792 / −22</td><td>4 files: the pair-style sources only (+ README section)</td></tr>
+</table></div>
+<p>Suggested review order: this page top-to-bottom for the design, then each branch's
+<code>UPSTREAM_DELTA.md</code> (committed at the repo root) alongside the diff — the delta docs
+enumerate every touch of pre-existing code with a compatibility verdict. The two branches form
+one feature but are reviewable independently: the pair-style changes are runtime-inert without a
+multirank-compiled model, and the nequip changes are opt-in behind a new compile target.</p>
+
+<h2 id="s2"><span class="no">2</span>Design</h2>
+<figure>
+<div class="diagram-wrap">
+<svg viewBox="0 0 760 320" width="760" role="img" aria-label="Two GPU ranks run the same layer stack; between every pair of layers, node features are exchanged across the domain boundary through LAMMPS Comm; forces flow back through the transpose.">
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/>
+    </marker>
+  </defs>
+  <rect x="20" y="34" width="290" height="240" rx="8" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
+  <rect x="450" y="34" width="290" height="240" rx="8" fill="none" stroke="var(--copper)" stroke-width="1.6"/>
+  <text x="34" y="22" font-size="13" fill="var(--accent)">rank 0 · GPU 0 (owned atoms + ghosts)</text>
+  <text x="464" y="22" font-size="13" fill="var(--copper)">rank 1 · GPU 1 (owned atoms + ghosts)</text>
+  <g font-size="12.5" fill="var(--ink)">
+    <rect x="48" y="52"  width="234" height="30" rx="4" fill="var(--code-bg)" stroke="var(--line)"/><text x="60" y="72">embed + edge features</text>
+    <rect x="48" y="112" width="234" height="30" rx="4" fill="var(--code-bg)" stroke="var(--line)"/><text x="60" y="132">interaction layer 1  [:nlocal]</text>
+    <rect x="48" y="172" width="234" height="30" rx="4" fill="var(--code-bg)" stroke="var(--line)"/><text x="60" y="192">interaction layer 2  [:nlocal]</text>
+    <rect x="48" y="232" width="234" height="30" rx="4" fill="var(--code-bg)" stroke="var(--line)"/><text x="60" y="252">owned-atom energies → Σ E, F</text>
+    <rect x="478" y="52"  width="234" height="30" rx="4" fill="var(--code-bg)" stroke="var(--line)"/><text x="490" y="72">embed + edge features</text>
+    <rect x="478" y="112" width="234" height="30" rx="4" fill="var(--code-bg)" stroke="var(--line)"/><text x="490" y="132">interaction layer 1  [:nlocal]</text>
+    <rect x="478" y="172" width="234" height="30" rx="4" fill="var(--code-bg)" stroke="var(--line)"/><text x="490" y="192">interaction layer 2  [:nlocal]</text>
+    <rect x="478" y="232" width="234" height="30" rx="4" fill="var(--code-bg)" stroke="var(--line)"/><text x="490" y="252">owned-atom energies → Σ E, F</text>
+  </g>
+  <line x1="380" y1="10" x2="380" y2="290" stroke="var(--muted)" stroke-dasharray="5 5"/>
+  <text x="380" y="306" font-size="11.5" fill="var(--muted)" text-anchor="middle">domain boundary (MPI)</text>
+  <g stroke="var(--muted)" stroke-width="1.4">
+    <line x1="292" y1="97"  x2="468" y2="97"  marker-end="url(#arr)" marker-start="url(#arr)"/>
+    <line x1="292" y1="157" x2="468" y2="157" marker-end="url(#arr)" marker-start="url(#arr)"/>
+    <line x1="292" y1="217" x2="468" y2="217" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  </g>
+  <g font-size="11.5" fill="var(--ink)">
+    <text x="380" y="91"  text-anchor="middle">nequip_lammps::ghost_exchange</text>
+    <text x="380" y="151" text-anchor="middle">ghost_exchange</text>
+    <text x="380" y="211" text-anchor="middle">ghost_exchange</text>
+  </g>
+</svg>
+</div>
+<figcaption>Route 2b: each rank evaluates the same compiled model on its owned atoms; before each
+layer consumes neighbor features, the <code>ghost_exchange</code> custom op refreshes ghost rows
+from their owning ranks through LAMMPS <code>Comm</code>. Forces traverse the registered autograd
+transpose (<code>ghost_exchange_reverse</code>); ghost forces go home via standard Newton reverse
+communication, exactly like the Allegro path.</figcaption>
+</figure>
+
+<p>The route was chosen against a fat N-layer input halo (receptive field ~N·r<sub>cut</sub>
+makes ghost shells — and redundant compute — explode with layer count) and against the existing
+ML-IAP coupling (eager-only, see §3.1). Per-layer exchange keeps each rank's ghost shell at one
+cutoff and moves <em>features</em> instead of recomputing them.</p>
+<p>Compiling for multi-GPU is one command — the target implies the ghost-exchange modifier and
+stamps metadata the pair style cross-checks at load:</p>
+<pre><code>nequip-compile model.nequip.zip model.nequip.pt2 \
+    --mode aotinductor --target pair_nequip_multirank --device cuda \
+    --modifiers enable_OpenEquivariance     # optional acceleration</code></pre>
+
+<h2 id="s3"><span class="no">3</span>Implementation</h2>
+
+<h3>3.1 The exchange is a custom op with no LAMMPS handle in its signature</h3>
+<p>The existing ML-IAP ghost exchange is a Python <code>autograd.Function</code> that calls
+methods on a <code>lmp_data</code> object — which is exactly what cannot survive AOTInductor
+(the <code>.pt2</code> runs in C++ with no interpreter). Here the exchange is a registered Torch
+operator whose schema carries only the tensor. The LAMMPS process defines the real
+implementation; the live pair instance is reached through a <code>thread_local</code> pointer to
+a minimal abstract bridge, armed only for the duration of a model call
+(<code>pair_nequip_allegro.cpp</code>):</p>
+<pre><code>TORCH_LIBRARY(nequip_lammps, m) {
+  m.def("ghost_exchange(Tensor node_features) -> Tensor");
+  m.def("ghost_exchange_reverse(Tensor grad_features) -> Tensor");
+}
+TORCH_LIBRARY_IMPL(nequip_lammps, CompositeExplicitAutograd, m) {
+  m.impl("ghost_exchange", &ghost_exchange_impl);          // -> bridge, or identity
+  m.impl("ghost_exchange_reverse", &ghost_exchange_reverse_impl);
+}</code></pre>
+<p>With no bridge armed — ASE, export tracing, single rank — the ops are the identity, which is
+also the traced behavior. On the Python side the same schema is registered with identity
+implementations and <code>ghost_exchange_reverse</code> wired in as the autograd rule
+(<code>nequip/nn/_ghost_exchange_pair.py</code>), so the transpose is traced into the compiled
+backward. There is no double-registration: compile process and LAMMPS process are separate.</p>
+
+<h3>3.2 Truncate-to-nlocal through a backed dynamic dimension</h3>
+<p>Per-node work should run on owned atoms only, but the owned count must not enter the graph as
+a tensor <em>value</em> (<code>.item()</code> → unbacked symint → export guard failures).
+Instead a marker input <code>num_local_nodes_marker</code> of shape <code>(nlocal,)</code>
+carries the count as its <em>dimension</em> (<code>nequip/nn/interaction_block.py</code>):</p>
+<pre><code>elif "num_local_nodes_marker" in data:
+    num_local_nodes = data["num_local_nodes_marker"].shape[0]  # backed symint
+...
+x = self.tp_scatter(...)   # over all ntotal rows (feature halo just refreshed)
+x = x[:num_local_nodes]    # every per-node op below runs owned-only</code></pre>
+<p>Before each exchange the owned block is re-expanded to <code>ntotal</code> with
+<code>slice_scatter</code> — deliberately not <code>cat</code> with a zeros block, which
+triggers 0/1-size specialization during export and bakes in either <code>nghost ≥ 1</code> or
+<code>nghost ≤ 0</code>. The export example uses <code>nghost &gt; 0</code> so the
+<code>nlocal</code> and <code>node</code> dims stay independent; the only deferred assert is
+<code>nlocal ≤ ntotal</code>, satisfiable at both ends. Energy reduction masks ghost rows with a
+guard-free elementwise comparison, so forces (its gradient) are owned-consistent too.</p>
+
+<h3>3.3 Two bridge implementations: host-staged and device-resident</h3>
+<p><b>Plain <code>pair_style nequip</code></b> stages <code>[ntotal, F]</code> through host
+double buffers and <code>Comm::forward_comm(this, F)</code> /
+<code>reverse_comm(this, F)</code> via the standard pair pack/unpack callbacks.
+<b><code>pair_style nequip/kk</code></b> (new instantiation <code>PairAllegroKokkos&lt;true&gt;</code>,
+now deriving from <code>KokkosBase</code>) keeps features on the GPU: pack/unpack kernels index
+the live tensor's device pointer by the device sendlist, and the exchange runs through
+<code>CommKokkos::*_comm_device</code> (GPU-aware MPI on device buffers):</p>
+<pre><code>Kokkos::parallel_for("nequip:pack_fwd", RangePolicy&lt;DeviceType&gt;(0, n * F),
+    KOKKOS_LAMBDA(const int s) {
+      const int i = s / F, c = s % F;
+      buf(s) = p[(long) idx(i) * F + c];          // rows of the live feature tensor
+    });
+...
+Kokkos::atomic_add(&p[(long) idx(i) * F + c], buf(s));  // reverse: accumulate to owners</code></pre>
+<p>After the reverse accumulation, ghost rows of the gradient are zeroed (the forward output's
+ghost rows do not depend on ghost inputs). The kernels run on the device stream, the same
+pattern mliap/kk uses, so no explicit torch↔Kokkos fence is needed.</p>
+
+<h3>3.4 Multirank input build and model detection</h3>
+<p><code>preprocess_multirank()</code> builds inputs in LAMMPS atom-index order (owned
+0…nlocal−1, ghosts nlocal…ntotal−1) so tensor rows line up with what <code>Comm</code> expects;
+ghost positions are <em>real</em> coordinates, hence <code>edge_cell_shift ≡ 0</code>; edges come
+from local atoms only with real neighbor indices (no tag remap). Detection is automatic:
+<code>coeff()</code> checks whether the model declares <code>num_local_ghost_atoms</code> among
+its inputs; a metadata stamp written by <code>nequip-compile</code> is cross-checked against
+that, warning on disagreement (declared inputs win). Multi-rank models require
+<code>newton pair on</code> and get a clear error otherwise; single-rank models on N ranks get
+an error containing the exact recompile command.</p>
+
+<h3>3.5 Self-contained accelerated artifacts (OEQ)</h3>
+<p>Models using accelerated TP kernels reference custom ops that Python registers via
+<code>import openequivariance</code> — unavailable in C++. For <code>pair_*</code> targets,
+<code>nequip-compile</code> now embeds the actual <code>.so</code> binaries in the
+<code>.pt2</code> zip (STORED, under <code>nequip_custom_op_libs/</code>), resolving them from
+the library's declared accessor with a <code>/proc/self/maps</code> fallback. The pair style
+extracts them with a ~100-line dependency-free ZIP central-directory reader and
+<code>dlopen(RTLD_NOW | RTLD_GLOBAL)</code>s them before loading the model. Overrides: a
+<code>&lt;model&gt;.oplibs</code> sidecar and <code>NEQUIP_OP_LIBRARIES</code>. This also fixes
+single-rank OEQ models in plain C++ LAMMPS, independent of multi-GPU.</p>
+
+<h3>3.6 Version-robust rebundle for pre-existing packaged models</h3>
+<p>A <code>.nequip.zip</code> carries frozen <code>nn</code> source and pickled instances whose
+<code>__init__</code> never re-runs. A package predating this work would compile for the
+multirank target but <em>silently</em> skip truncation — the energy sum includes ghosts (observed
+in production as a +0.774 eV/atom offset before this machinery existed). The fix has two layers:</p>
+<ul>
+  <li><b>Auto-rebundle:</b> compiling a stale package for the multirank target derives an
+  era-matched overlay <em>from the package's own bundled source</em> and applies only bounded,
+  additive grafts (<code>nequip/scripts/_multirank_graft.py</code>: marker branch, marker
+  passthrough, exchange module, custom-ops metadata, owned-only reduce + ZBL). Deriving from the
+  package's own source keeps its frozen instances attribute- and import-compatible by
+  construction, for any nequip era — injecting the <em>installed</em> nn was demonstrated to
+  crash on era mismatches (<code>avg_num_neighbors_norm</code> and friends). The rebundle runs
+  through <code>nequip-package update</code>, which verifies predictions unchanged.</li>
+  <li><b>Gate:</b> a LAMMPS-level correctness gate (single-rank reference vs multirank artifact
+  at 1 rank <em>with ghosts</em>; PBC makes nghost &gt; 0 so the exchange path actually runs)
+  because the eager prediction-verify structurally cannot exercise it.</li>
+</ul>
+<p class="footnote">Maintainer question flagged in §7: whether auto-rebundle belongs upstream or
+should remain a deployment-side tool — models re-exported from checkpoints with a current nequip
+never need it.</p>
+
+<h2 id="s4"><span class="no">4</span>Compatibility: additions, not modifications</h2>
+<div class="callout">
+  <p><b>Every pre-existing feature is preserved.</b> The multirank machinery activates only for
+  models that declare the new input — impossible for any model compiled before this work. Each
+  branch's <code>UPSTREAM_DELTA.md</code> enumerates every shared-path touch exhaustively; the
+  full tables live there, summarized here.</p>
+</div>
+<h3>pair_nequip_allegro (10 shared-path touches)</h3>
+<ul>
+  <li>Comm-buffer sizing: <code>nequip-compile</code> stamps the widest per-node feature width
+  crossing the exchange into the artifact (<code>pair_nequip_feature_width</code>), and
+  <code>coeff()</code> sizes the LAMMPS comm buffers <b>exactly</b> from it. Non-multirank
+  models (all pre-existing ones) get <code>comm_forward = comm_reverse = 0</code> — exactly
+  upstream's memory behavior. Only a multirank model compiled before the stamp existed falls
+  back to a bounded default, guarded by a hard-error (never overflow) in the exchange.</li>
+  <li>The single-rank restriction moved from constructor to <code>init_style()</code> — required
+  because multirank capability is only known after <code>coeff()</code>; same protection,
+  actionable message.</li>
+  <li>AOT loader pins weights to the rank's device; each model call runs under a device guard —
+  identity on one GPU, correctness fix on many (default left every rank's weights on
+  <code>cuda:0</code> → cross-device fault).</li>
+  <li>Force/energy write-back restructured to <code>if (is_multirank) … else</code> — the else
+  branch is the upstream loop verbatim.</li>
+  <li>Second in-process AOT load (e.g. after <code>clear</code>): clean, explanatory error where
+  a segfault used to be. Op-library loading no-ops when a model embeds nothing. Kokkos
+  <code>reverse_comm_device = 1</code> is inert for <code>allegro/kk</code>, which never issues
+  pair-initiated reverse comm. Four commented-out debug lines removed.</li>
+</ul>
+<h3>nequip (6 shared-path touches)</h3>
+<ul>
+  <li><code>AtomwiseReduce</code>'s owned-mask and batch-slice are provable no-ops on every
+  existing path (ML-IAP already truncates its field before the reduce; without the key the branch
+  is skipped).</li>
+  <li><code>InteractionBlock</code>'s slice was split into two statements — identical semantics;
+  the new marker branch is an <code>elif</code> between the existing two.</li>
+  <li>Key-registry additions register the pre-existing ML-IAP ghost-count key as graph-typed for
+  export machinery; exercised only by the new target.</li>
+  <li>The custom-ops embedding block now unions metadata with modifier-derived libs (warning when
+  metadata was incomplete); name-based embedding for Python consumers unchanged.</li>
+  <li><b>One genuine upstream bug fix:</b> ZBL's per-atom energy scatter used
+  <code>dim_size = nlocal</code> in local-ghost contexts — an out-of-bounds write whenever an
+  edge centers on a ghost atom (reachable via today's ML-IAP + ZBL). Fixed by scattering over
+  <code>ntotal</code> then truncating; identical result in the no-ghost case. Separable as its
+  own PR.</li>
+</ul>
+
+<h2 id="s5"><span class="no">5</span>Validation</h2>
+<div class="tablewrap"><table>
+  <tr><th>Check</th><th>Result</th><th>Status</th></tr>
+  <tr><td>nequip unit tests: <code>pr/multigpu</code> vs pristine upstream <code>main</code>, identical env (macOS arm64, CPU torch 2.9)</td>
+      <td>6349 passed / 244 skipped on both; the 32 errors are environment artifacts (MPS has no float64) and are bit-identical on both refs</td>
+      <td><span class="status pass">PASS</span></td></tr>
+  <tr><td>PR-branch C++ compiles (hipcc, Kokkos HIP gfx90a + OpenMP + Serial, C++20, LAMMPS patch_30Mar2026)</td>
+      <td>incremental tree build of the 4 pair sources → <code>lmp</code> linked, 2026-08-18, LUMI job 21342035</td>
+      <td><span class="status pass">PASS</span></td></tr>
+  <tr><td>Correctness gate, rebased nequip scripts bound into the container (fine-tuned OAM-M package, MgO+water 360 atoms, OEQ, 1 rank with ghosts, tol 1e-4 eV/atom)</td>
+      <td>single-rank PE −2250.2484 = multirank PE −2250.2484; <code>MRT_GATE_VERDICT PASS dPE_per_atom=0</code>, LUMI job 21342051</td>
+      <td><span class="status pass">PASS</span></td></tr>
+  <tr><td>Gate sensitivity (June self-validation): known-bad overlay must FAIL</td>
+      <td>graft-deleted overlay → wrong PE → gate FAIL (exit 1); fixed path → PASS. Specificity + sensitivity both demonstrated</td>
+      <td><span class="status pass">PASS · June</span></td></tr>
+  <tr><td>Multi-GPU rank-invariance, 1 / 8 / 32 GCDs (2880-atom MgO+water)</td>
+      <td>ΔPE/atom ≈ 1×10<sup>−6</sup> eV</td>
+      <td><span class="status pass">PASS · June</span></td></tr>
+  <tr><td>Force agreement vs single-rank reference</td>
+      <td>max |ΔF| ≈ 1×10<sup>−5</sup> eV/Å</td>
+      <td><span class="status pass">PASS · June</span></td></tr>
+  <tr><td>Cross-engine agreement with <code>mliap/kk</code>, 2880-atom cell, 8 GCDs</td>
+      <td>−18001.987 vs −18001.986 eV total PE</td>
+      <td><span class="status pass">PASS · June</span></td></tr>
+  <tr><td>Era-robustness of the rebundle (the original silent-offset scenario)</td>
+      <td>nequip-0.17-packaged fine-tuned model compiled on a 0.15-era stack reproduces single-rank ground truth exactly; 0.15-era base model still passes regression</td>
+      <td><span class="status pass">PASS · June</span></td></tr>
+  <tr><td><code>clear</code> + second model load trips the new clean error, no segfault (first runtime test of the guard commit, fresh binary)</td>
+      <td>first load runs, guard emits its explanatory error on the 2nd load, no segfault; multirank detection + embedded-OEQ dlopen + newton-on guard all exercised en route — LUMI job 21342278</td>
+      <td><span class="status pass">PASS</span></td></tr>
+  <tr><td>CPU regression test of the export path (new, ships with the branch): single-rank vs multirank artifacts from the same model at <code>nghost = 0</code>, plus metadata-stamp asserts</td>
+      <td><code>test_pair_nequip_multirank_matches_single_rank</code> passes locally (CPU); runs in the standard pytest suite</td>
+      <td><span class="status pass">PASS</span></td></tr>
+  <tr><td>Exact comm sizing end-to-end: recompile with width stamp, rebuild pair C++, gate rerun, and a 1-rank Kokkos run on the freshly stamped artifact confirming the exact-sizing path</td>
+      <td>compile clean; gate <code>PASS dPE_per_atom=0</code>; smoke run exercises the exact-sizing branch and reproduces the reference PE to 3×10<sup>−7</sup> eV/atom — LUMI jobs 21343378 / 21343379 / 21343380</td>
+      <td><span class="status pass">PASS</span></td></tr>
+</table></div>
+
+<h2 id="s6"><span class="no">6</span>Benchmarks, with environments</h2>
+
+<h3>6.1 Environments</h3>
+<div class="envgrid">
+  <div class="envcard">
+    <h4>Benchmark platform</h4>
+    <dl>
+      <dt>Machine</dt><dd>LUMI-G (HPE Cray EX), dev-g partition</dd>
+      <dt>GPU</dt><dd>AMD MI250X — 1 GCD = 1 rank, 64 GB HBM per GCD (gfx90a)</dd>
+      <dt>Interconnect</dt><dd>Slingshot-11, GPU-aware Cray MPICH (GTL)</dd>
+      <dt>CPU binding</dt><dd>--cpus-per-task=7 + LUMI low-noise CCD↔GCD adjacency masks (--cpu-bind=mask_cpu:…); N&lt;8 uses --cpu-bind=cores</dd>
+    </dl>
+  </div>
+  <div class="envcard">
+    <h4>Software stack (frozen module)</h4>
+    <dl>
+      <dt>EB module</dt><dd>LAMMPS/patch-30Mar2026-pair-allegro-rocm-6.3.4-pytorch-2.9.0-20260628-pairnq-multigpu-rebundle</dd>
+      <dt>Inside</dt><dd>LAMMPS patch_30Mar2026 · ROCm 6.3.4 · torch 2.9.0+rocm6.3 · Kokkos HIP gfx90a · C++20 · singularity SIF</dd>
+      <dt>Pair sources</dt><dd>pair_nequip_allegro @ 7d3ed11 + nequip @ 7ec3ce97 (+ version-robust rebundle 40acd451)</dd>
+    </dl>
+  </div>
+  <div class="envcard">
+    <h4>Models &amp; systems</h4>
+    <dl>
+      <dt>Model</dt><dd>OAM-M fine-tuned (MgO+water), packaged nequip 0.17; full element set retained</dd>
+      <dt>Compile</dt><dd>both engines compiled fresh from the same .nequip.zip on the module; OEQ (OpenEquivariance) kernels on BOTH; fp64 I/O, fp32 inference</dd>
+      <dt>Systems</dt><dd>mgoh = MgO+water, 360-atom base, NPT · cu = FCC-Cu, 256-atom base, NVE (throughput proxy)</dd>
+    </dl>
+  </div>
+  <div class="envcard">
+    <h4>Engines compared</h4>
+    <dl>
+      <dt>pair_nequip multirank</dt><dd>nequip-compile --target pair_nequip_multirank --modifiers enable_PairNequIPGhostExchange enable_OpenEquivariance</dd>
+      <dt>mliap/kk</dt><dd>nequip-prepare-lmp-mliap --modifiers enable_OpenEquivariance → pair_style mliap unified … -sf kk (see 6.1.1)</dd>
+      <dt>Units</dt><dd>ts/s = MD timesteps per second (higher is better)</dd>
+    </dl>
+  </div>
+</div>
+
+<h4 id="s611">6.1.1 The ML-IAP baseline was tuned, not stock</h4>
+<p>The comparison is only meaningful if the ML-IAP route ran with its optimizations on. It did —
+the benchmarked mliap/kk configuration carried, verified against the wrapper source at the
+benchmark module's nequip commit and the container recipe:</p>
+<ul>
+  <li><b>OpenEquivariance kernels</b> — the same <code>enable_OpenEquivariance</code> modifier as
+  pair_nequip, so both engines execute identical accelerated tensor-product kernels. (The
+  compute-bound parity in §6.4 is the direct evidence of kernel fairness.)</li>
+  <li><b><code>torch.compile</code>, on by default</b> in the ML-IAP wrapper, with freezing set so
+  weight <b>constant folding</b> happens at compile time (the wrapper sets it via inductor config
+  because the <code>options=</code> path doesn't take). Default inductor mode.</li>
+  <li><b><code>disable_ForceStressOutput</code></b> — energy-only graph with forces through the
+  ML-IAP edge-force route, the intended pattern for this integration.</li>
+  <li><b>Per-edge-type cutoff neighbor-list pruning</b>
+  (<code>NeighborListPruneTransform</code>) — the LAMMPS neighbor list is pruned to the model's
+  per-pair cutoffs before the model sees it.</li>
+  <li><b>The ML-IAP ghost-exchange modifier</b> — upstream's own multi-rank mechanism for this
+  route, active in all multi-GCD runs.</li>
+  <li><b>Kokkos ML-IAP</b> (<code>pair_style mliap unified … -sf kk</code>, newton on) with
+  device-resident data and <b>GPU-aware Cray MPICH (GTL)</b> for the cross-rank exchange.</li>
+  <li><b>The torch↔Kokkos stream-race fix</b> applied as a container source patch (two
+  <code>torch.cuda.synchronize()</code> at the torch↔LAMMPS boundary, ~0.8% overhead; since
+  merged upstream as nequip #605) — required to keep mliap/kk fault-free at all on MI250X, and
+  included in every benchmarked run.</li>
+  <li>Same precision (fp64 I/O, fp32 inference) and the same CPU-binding masks as pair_nequip —
+  the binding correction of §6.1 helped mliap far more than pair_nequip and is baked into every
+  number on this page.</li>
+</ul>
+<p>Deliberately <em>not</em> used, for the record: an earlier <b>HIP-graph-capture</b> variant of
+the mliap path (~90 ts/s in one experiment) was NVE-only and fragile and was dropped from the
+campaign before the head-to-head; an experimental <b>max-autotune-no-cudagraphs</b> compile mode
+exists only on a side branch (<code>add-lammps-mliap-compile-mode</code>) and was not in the
+frozen benchmark module — for either engine.</p>
+
+<div class="callout warn">
+  <p><b>Methodology caveat that reshaped the results:</b> the first scaling pass ran with
+  <code>--cpu-bind=none</code>, which does not cost "a few percent" — ranks float across CCDs and
+  stall at collectives (<code>Other</code> up to 57% of loop time, <code>Comm %varavg</code>
+  278%). The heavier-synchronization mliap path paid far more than pair_nequip, inflating early
+  speedup claims. Every number below is from <b>bound</b> runs; unbound-vs-bound deltas are in
+  the campaign record. Reviewers comparing engines on other machines should bind first.</p>
+</div>
+
+<h3>6.2 Correctness gate for the benchmark configuration</h3>
+<div class="tablewrap"><table>
+  <tr><th>Check</th><th class="num">Value</th></tr>
+  <tr><td>pair_nequip multirank @ 8 GCD, (2,2,2) = 2880 atoms</td><td class="num">PE = −18001.987 eV</td></tr>
+  <tr><td>mliap/kk @ 8 GCD, same cell</td><td class="num">PE = −18001.986 eV</td></tr>
+  <tr><td>single-rank ground truth (8 × −2250.2484)</td><td class="num">−18001.987 eV</td></tr>
+  <tr><td>rebundle rank-invariance, 1 vs 8 GCD</td><td class="num">ΔPE/atom = 1.0×10<sup>−6</sup> eV</td></tr>
+</table></div>
+
+<h3>6.3 Strong scaling, small fixed cell (the active-learning regime) — ts/s</h3>
+<div class="tablewrap"><table>
+  <tr><th class="num">GCDs</th><th class="num">mgoh 2880 · pair_nequip</th><th class="num">mgoh · mliap/kk</th><th class="num">cu 2048 · pair_nequip</th><th class="num">cu · mliap/kk</th></tr>
+  <tr><td class="num">1</td><td class="num">17.2</td><td class="num">15.8</td><td class="num">23.0</td><td class="num">22.3</td></tr>
+  <tr><td class="num">2</td><td class="num">30.3</td><td class="num">25.0</td><td class="num">41.5</td><td class="num">32.9</td></tr>
+  <tr><td class="num">4</td><td class="num">48.0</td><td class="num">31.7</td><td class="num">63.7</td><td class="num">35.7</td></tr>
+  <tr><td class="num">8</td><td class="num">64.6</td><td class="num">33.9</td><td class="num">85.8</td><td class="num">35.7</td></tr>
+  <tr><td class="num">16</td><td class="num">76.1</td><td class="num">35.7</td><td class="num">92.9</td><td class="num">38.0</td></tr>
+  <tr><td class="num">32</td><td class="num">77.3</td><td class="num">35.6</td><td class="num">98.4</td><td class="num">38.0</td></tr>
+</table></div>
+<p class="footnote">pair_nequip saturates ≈2.2–2.6× higher (77 vs 35; 98 vs 38). This is the
+regime that matters for active learning and long-time MD on small cells.</p>
+
+<h3>6.4 Weak scaling — ts/s</h3>
+<div class="tablewrap"><table>
+  <tr><th class="num">GCDs</th><th class="num">atoms (mgoh)</th><th class="num">small load · pn</th><th class="num">small load · ml</th><th class="num">atoms (mgoh)</th><th class="num">large load · pn</th><th class="num">large load · ml</th></tr>
+  <tr><td class="num">1</td><td class="num">360</td><td class="num">74.7</td><td class="num">44.5</td><td class="num">2880</td><td class="num">17.3</td><td class="num">15.7</td></tr>
+  <tr><td class="num">2</td><td class="num">720</td><td class="num">76.6</td><td class="num">40.9</td><td class="num">5760</td><td class="num">16.9</td><td class="num">15.9</td></tr>
+  <tr><td class="num">4</td><td class="num">1440</td><td class="num">72.0</td><td class="num">36.3</td><td class="num">11520</td><td class="num">16.0</td><td class="num">14.9</td></tr>
+  <tr><td class="num">8</td><td class="num">2880</td><td class="num">65.4</td><td class="num">34.0</td><td class="num">23040</td><td class="num">16.0</td><td class="num">14.6</td></tr>
+  <tr><td class="num">16</td><td class="num">5760</td><td class="num">59.7</td><td class="num">32.8</td><td class="num">46080</td><td class="num">14.9</td><td class="num">13.8</td></tr>
+  <tr><td class="num">32</td><td class="num">11520</td><td class="num">58.3</td><td class="num">31.8</td><td class="num">92160</td><td class="num">14.9</td><td class="num">13.6</td></tr>
+</table></div>
+<p class="footnote">Small load = 360 mgoh atoms/GCD (overhead-bound; pn ≈1.8–2.4× ml). Large
+load = 2880 atoms/GCD (compute-bound; both engines near parity, pn ≈1.05–1.1×). Same shape on
+FCC-Cu. The comparison is load-dependent, not a flat speedup — with identical kernels the two
+paths converge when the GPU is saturated; pair_nequip wins where per-step floor and exchange
+overhead dominate.</p>
+
+<h3>6.5 Strong scaling, large fixed cell (multi-node regime) — ts/s</h3>
+<div class="tablewrap"><table>
+  <tr><th class="num">GCDs</th><th class="num">mgoh 23040 · pn</th><th class="num">mgoh · ml</th><th class="num">cu 16384 · pn</th><th class="num">cu · ml</th></tr>
+  <tr><td class="num">1</td><td class="num">2.40</td><td class="num">2.27</td><td class="num">3.75</td><td class="num">3.60</td></tr>
+  <tr><td class="num">4</td><td class="num">8.68</td><td class="num">8.34</td><td class="num">13.09</td><td class="num">11.02</td></tr>
+  <tr><td class="num">8</td><td class="num">16.0</td><td class="num">14.6</td><td class="num">21.7</td><td class="num">20.5</td></tr>
+  <tr><td class="num">16</td><td class="num">27.1</td><td class="num">21.6</td><td class="num">36.9</td><td class="num">27.9</td></tr>
+  <tr><td class="num">32</td><td class="num">45.0</td><td class="num">22.1</td><td class="num">60.7</td><td class="num">33.8</td></tr>
+</table></div>
+<p class="footnote">pair_nequip strong-scales ≈2× further at 32 GCDs. Beyond throughput, it was
+also the <em>stable</em> multi-node path: mliap/kk showed two distinct failure modes at 32 GCDs —
+binding imbalance (fixed by the mask) and OEQ/JIT-cache contention (3.63 vs 13.6 ts/s for the
+identical config across allocations, perfectly load-balanced but on a slow kernel) — while
+pair_nequip reproduced to three digits across allocations.</p>
+
+<h3>6.6 Single-GCD capacity (OAM-M inference, fp32, one 64 GB GCD)</h3>
+<div class="tablewrap"><table>
+  <tr><th class="num">Atoms</th><th class="num">pair_nequip + OEQ · ts/s</th><th class="num">pair_nequip no-OEQ · ts/s</th></tr>
+  <tr><td class="num">2 880</td><td class="num">17.5</td><td class="num">1.87</td></tr>
+  <tr><td class="num">11 520</td><td class="num">4.85</td><td class="num">0.48</td></tr>
+  <tr><td class="num">23 040</td><td class="num">2.44</td><td class="num">OOM</td></tr>
+  <tr><td class="num">46 080</td><td class="num">1.23</td><td class="num">OOM</td></tr>
+  <tr><td class="num">92 160</td><td class="num">OOM</td><td class="num">OOM</td></tr>
+</table></div>
+<p class="footnote">OEQ's streamed tensor-product contractions never materialize the large
+per-edge intermediates, buying ~4× the capacity <em>and</em> ~10× the speed — the ceiling moves
+from ~11–23k to ~46–92k atoms per GCD. This is why the <code>.so</code>-embedding work (§3.5)
+is part of the contribution: the accelerated path must be loadable from plain C++ LAMMPS.</p>
+
+<h2 id="s7"><span class="no">7</span>Proposed path to merge</h2>
+<ul>
+  <li><b>PR 0 (small, independent):</b> the ZBL local-ghost scatter fix to
+  <code>mir-group/nequip</code> — self-contained correctness fix for the existing ML-IAP path.</li>
+  <li><b>PR 1:</b> <code>mir-group/nequip</code> — the <code>pair_nequip_multirank</code> target,
+  marker key, nn modules, <code>.so</code> embedding, and (pending the maintainer question)
+  rebundle machinery. <code>henriasv/nequip@pr/multigpu</code>, rebased on current
+  <code>main</code>.</li>
+  <li><b>PR 2:</b> <code>mir-group/pair_nequip_allegro</code> — the pair-style changes.
+  <code>henriasv/pair_nequip_allegro@pr/multigpu</code>, based on current <code>main</code>;
+  runtime-inert without a PR 1 model.</li>
+</ul>
+<h3>Open questions for maintainers</h3>
+<ul>
+  <li>Should auto-rebundle (§3.6) land upstream, or stay a deployment-side tool with docs
+  pointing to re-export-from-checkpoint?</li>
+  <li>Naming review: <code>pair_nequip_multirank</code> (target),
+  <code>pair_style nequip/kk</code>, and the <code>pair_nequip_feature_width</code> /
+  <code>pair_nequip_multirank</code> metadata keys.</li>
+  <li>The <code>slice_scatter</code> export reasoning and marker-key design vs upstream's
+  export-guard conventions.</li>
+</ul>
+<p class="footnote">Previously-open items now closed on the branches: exact comm-buffer sizing
+(stamped by the compiler, read by the pair style; non-multirank models restored to upstream's
+zero comm footprint), a CPU-runnable regression test
+(<code>PairNequIPMultirankMixin</code> in the standard pytest suite), a user-facing docs page
+(<code>docs/integrations/lammps/multirank.md</code>), and the ZBL fix carved out as the
+standalone branch <code>fix/zbl-local-ghost-scatter</code> ready for PR 0.</p>
+
+<h3>Pointers</h3>
+<ul>
+  <li><code>github.com/henriasv/nequip</code> · branch <code>pr/multigpu</code> (+ <code>UPSTREAM_DELTA.md</code>)</li>
+  <li><code>github.com/henriasv/pair_nequip_allegro</code> · branch <code>pr/multigpu</code> (+ <code>UPSTREAM_DELTA.md</code>)</li>
+  <li>Related, already merged upstream: mir-group/nequip
+  <a href="https://github.com/mir-group/nequip/pull/605">#605</a> — torch↔Kokkos stream-race fix
+  in ML-IAP <code>compute_forces</code> (found during the same campaign).</li>
+  <li>Campaign records (benchmark methodology, gate scripts, build recipe): available on request —
+  <code>pair_nequip_vs_mliap_bound_20260628.md</code> and the LUMI container recipe.</li>
+</ul>
+</div>
+</body></html>

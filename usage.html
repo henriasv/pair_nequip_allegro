@@ -1,0 +1,239 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-GPU pair_nequip usage</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Public+Sans:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #FAFAF7;
+    --ink: #1C2321;
+    --muted: #5A6763;
+    --line: #D8DDD9;
+    --accent: #0E7C86;
+    --copper: #A66430;
+    --surface: #F1F2EE;
+    --code-bg: #ECEFEC;
+    --good: #2E7D4F;
+    --warn: #9A6A1B;
+    --bad: #A63A32;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141A19;
+      --ink: #E6EBE8;
+      --muted: #93A09B;
+      --line: #2C3533;
+      --accent: #46B8C2;
+      --copper: #D49463;
+      --surface: #1B2220;
+      --code-bg: #1A211F;
+      --good: #5CBF8A;
+      --warn: #D2A55A;
+      --bad: #DB8078;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141A19;
+    --ink: #E6EBE8;
+    --muted: #93A09B;
+    --line: #2C3533;
+    --accent: #46B8C2;
+    --copper: #D49463;
+    --surface: #1B2220;
+    --code-bg: #1A211F;
+    --good: #5CBF8A;
+    --warn: #D2A55A;
+    --bad: #DB8078;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+    font-size: 1rem;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 1.25rem 5rem;
+  }
+  .page { max-width: 62rem; margin: 0 auto; }
+  header.doc { padding: 3.5rem 0 2rem; border-bottom: 2px solid var(--ink); }
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.9rem;
+  }
+  h1 {
+    font-family: "Zilla Slab", Georgia, serif;
+    font-weight: 700;
+    font-size: clamp(2.1rem, 5vw, 3.1rem);
+    line-height: 1.08;
+    margin: 0 0 1.1rem;
+    text-wrap: balance;
+  }
+  .lede { font-size: 1.08rem; max-width: 64ch; margin: 0 0 1.6rem; }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 0.4rem 2rem;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.8rem; color: var(--muted);
+  }
+  .meta b { color: var(--ink); font-weight: 500; }
+  nav.toc {
+    margin: 1.6rem 0 0;
+    padding: 1rem 0 0;
+    border-top: 1px solid var(--line);
+    font-size: 0.88rem;
+    display: flex; flex-wrap: wrap; gap: 0.3rem 1.6rem;
+  }
+  nav.toc a { color: var(--ink); text-decoration: none; }
+  nav.toc a:hover { color: var(--accent); }
+  nav.toc .n { color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: 0.8em; margin-right: 0.3em; }
+  h2 {
+    font-family: "Zilla Slab", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.6rem;
+    margin: 3.2rem 0 0.8rem;
+    text-wrap: balance;
+  }
+  h2 .no { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 0.55rem; }
+  h3 {
+    font-family: "Zilla Slab", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.18rem;
+    margin: 2rem 0 0.5rem;
+  }
+  h4 {
+    font-size: 0.98rem;
+    margin: 1.4rem 0 0.4rem;
+  }
+  p, li { max-width: 72ch; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.86em; }
+  code { background: var(--code-bg); border-radius: 3px; padding: 0.08em 0.32em; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  .tablewrap { overflow-x: auto; margin: 1.2rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.89rem; }
+  th {
+    font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+    text-align: left; color: var(--muted); font-weight: 700;
+    border-bottom: 2px solid var(--ink);
+    padding: 0.45rem 0.9rem 0.45rem 0;
+  }
+  td { border-bottom: 1px solid var(--line); padding: 0.5rem 0.9rem 0.5rem 0; vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0.5rem; }
+  td code { white-space: nowrap; }
+  .status {
+    display: inline-block;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem; letter-spacing: 0.05em;
+    padding: 0.1rem 0.5rem; border-radius: 999px;
+    border: 1px solid currentColor; white-space: nowrap;
+  }
+  .status.pass { color: var(--good); }
+  .status.pend { color: var(--warn); }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    padding: 0.9rem 1.2rem;
+    margin: 1.4rem 0;
+    max-width: 72ch;
+  }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout p { margin: 0.3rem 0; }
+  figure { margin: 2rem 0; }
+  figcaption { font-size: 0.82rem; color: var(--muted); margin-top: 0.6rem; max-width: 72ch; }
+  .diagram-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; }
+  svg text { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  ul { padding-left: 1.2rem; }
+  li { margin: 0.32rem 0; }
+  .footnote { font-size: 0.85rem; color: var(--muted); }
+  .envgrid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 1rem; margin: 1.2rem 0;
+  }
+  .envcard {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 0.9rem 1.1rem; font-size: 0.86rem;
+  }
+  .envcard h4 { margin: 0 0 0.5rem; font-family: "Zilla Slab", serif; font-size: 1rem; }
+  .envcard dl { margin: 0; }
+  .envcard dt { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.5rem; }
+  .envcard dd { margin: 0.1rem 0 0; font-family: "IBM Plex Mono", monospace; font-size: 0.8rem; overflow-wrap: anywhere; }
+</style>
+</head><body>
+<nav style="border-bottom:1px solid var(--line); background:var(--surface);">
+  <div style="max-width:62rem;margin:0 auto;padding:0.55rem 1.25rem;display:flex;flex-wrap:wrap;gap:0.3rem 1.5rem;font-family:'IBM Plex Mono',monospace;font-size:0.8rem;">
+    <span style="color:var(--muted);">multi-GPU pair_nequip</span>
+    <a href="./" style="color:var(--accent);text-decoration:none;">evaluation</a>
+    <a href="usage.html" style="color:var(--accent);text-decoration:none;">usage</a>
+    <a href="pr-drafts.html" style="color:var(--accent);text-decoration:none;">PR drafts</a>
+    <a href="https://github.com/henriasv/nequip/tree/pr/multigpu" style="color:var(--accent);text-decoration:none;">nequip↗</a>
+    <a href="https://github.com/henriasv/pair_nequip_allegro/tree/pr/multigpu" style="color:var(--accent);text-decoration:none;">pair_nequip_allegro↗</a>
+  </div>
+</nav>
+<div class="page">
+<header class="doc">
+  <p class="eyebrow">User guide</p>
+  <h1>Running NequIP on many GPUs</h1>
+  <p class="lede">How to compile and run a multi-rank NequIP model with
+  <code>pair_style nequip</code> in LAMMPS. This mirrors the docs page shipped on the fork
+  (<code>docs/integrations/lammps/multirank.md</code>).</p>
+</header>
+
+<h2><span class="no">1</span>Compile the model</h2>
+<pre><code>nequip-compile \
+  path/to/model.nequip.zip  path/to/model.nequip.pt2 \
+  --device cuda \
+  --mode aotinductor \
+  --target pair_nequip_multirank \
+  --modifiers enable_OpenEquivariance   # optional acceleration</code></pre>
+<ul>
+  <li>Only <code>--mode aotinductor</code> is supported for this target.</li>
+  <li>The target auto-applies the <code>enable_PairNequIPGhostExchange</code> modifier — never
+  pass it yourself (with any other target it is an error).</li>
+  <li>For <code>pair_*</code> targets the custom-op libraries an acceleration needs (e.g.
+  OpenEquivariance's) are embedded into the <code>.pt2</code>, so the artifact is
+  self-contained for LAMMPS.</li>
+  <li>Compiling an older packaged model triggers an automatic re-bundle that grafts multi-rank
+  support onto the package's own bundled source; predictions are verified unchanged. Models
+  re-exported from a checkpoint with a current nequip never need this.</li>
+</ul>
+
+<h2><span class="no">2</span>Run in LAMMPS</h2>
+<pre><code>newton          on
+pair_style      nequip
+pair_coeff      * * model.nequip.pt2 &lt;type name 1&gt; &lt;type name 2&gt; ...</code></pre>
+<ul>
+  <li><code>newton pair on</code> is required — ghost forces return to their owners through
+  LAMMPS' standard reverse communication, as for <code>pair_allegro</code>.</li>
+  <li>Run one MPI rank per GPU. With Kokkos (<code>-sf kk</code>, style resolves to
+  <code>nequip/kk</code>) the feature exchange stays on the GPU and uses GPU-aware MPI:</li>
+</ul>
+<pre><code>srun --ntasks-per-node=8 --gpus-per-node=8 lmp \
+  -k on g 8 -sf kk -pk kokkos newton on neigh half gpu/aware on -in in.script</code></pre>
+<ul>
+  <li>Bind CPUs to their GPUs' NUMA domains — unbound ranks cost far more than a few percent
+  in multi-node runs (see the evaluation page's methodology note).</li>
+  <li>The pair style detects multi-rank capability from the model; a single-rank model on
+  several ranks aborts with an error that includes the exact recompile command.</li>
+</ul>
+
+<h2><span class="no">3</span>Verify a deployment</h2>
+<p>Compile both <code>pair_nequip</code> and <code>pair_nequip_multirank</code> targets from
+the same model, run both on <b>one</b> rank on a small periodic cell (PBC ⇒ ghosts exist, so
+the exchange path actually executes), and compare potential energies (tolerance
+1e-4 eV/atom). Multi-rank potential energy must also be invariant to the number of ranks.
+Never skip this for fine-tuned or older packaged models — a wrong bundle fails silently, which
+is exactly what this gate catches.</p>
+</div>
+</body></html>

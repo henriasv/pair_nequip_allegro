@@ -1,0 +1,320 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-GPU pair_nequip PR drafts</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Public+Sans:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #FAFAF7;
+    --ink: #1C2321;
+    --muted: #5A6763;
+    --line: #D8DDD9;
+    --accent: #0E7C86;
+    --copper: #A66430;
+    --surface: #F1F2EE;
+    --code-bg: #ECEFEC;
+    --good: #2E7D4F;
+    --warn: #9A6A1B;
+    --bad: #A63A32;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141A19;
+      --ink: #E6EBE8;
+      --muted: #93A09B;
+      --line: #2C3533;
+      --accent: #46B8C2;
+      --copper: #D49463;
+      --surface: #1B2220;
+      --code-bg: #1A211F;
+      --good: #5CBF8A;
+      --warn: #D2A55A;
+      --bad: #DB8078;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141A19;
+    --ink: #E6EBE8;
+    --muted: #93A09B;
+    --line: #2C3533;
+    --accent: #46B8C2;
+    --copper: #D49463;
+    --surface: #1B2220;
+    --code-bg: #1A211F;
+    --good: #5CBF8A;
+    --warn: #D2A55A;
+    --bad: #DB8078;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+    font-size: 1rem;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 1.25rem 5rem;
+  }
+  .page { max-width: 62rem; margin: 0 auto; }
+  header.doc { padding: 3.5rem 0 2rem; border-bottom: 2px solid var(--ink); }
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.9rem;
+  }
+  h1 {
+    font-family: "Zilla Slab", Georgia, serif;
+    font-weight: 700;
+    font-size: clamp(2.1rem, 5vw, 3.1rem);
+    line-height: 1.08;
+    margin: 0 0 1.1rem;
+    text-wrap: balance;
+  }
+  .lede { font-size: 1.08rem; max-width: 64ch; margin: 0 0 1.6rem; }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 0.4rem 2rem;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.8rem; color: var(--muted);
+  }
+  .meta b { color: var(--ink); font-weight: 500; }
+  nav.toc {
+    margin: 1.6rem 0 0;
+    padding: 1rem 0 0;
+    border-top: 1px solid var(--line);
+    font-size: 0.88rem;
+    display: flex; flex-wrap: wrap; gap: 0.3rem 1.6rem;
+  }
+  nav.toc a { color: var(--ink); text-decoration: none; }
+  nav.toc a:hover { color: var(--accent); }
+  nav.toc .n { color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: 0.8em; margin-right: 0.3em; }
+  h2 {
+    font-family: "Zilla Slab", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.6rem;
+    margin: 3.2rem 0 0.8rem;
+    text-wrap: balance;
+  }
+  h2 .no { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 0.55rem; }
+  h3 {
+    font-family: "Zilla Slab", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.18rem;
+    margin: 2rem 0 0.5rem;
+  }
+  h4 {
+    font-size: 0.98rem;
+    margin: 1.4rem 0 0.4rem;
+  }
+  p, li { max-width: 72ch; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.86em; }
+  code { background: var(--code-bg); border-radius: 3px; padding: 0.08em 0.32em; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  .tablewrap { overflow-x: auto; margin: 1.2rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.89rem; }
+  th {
+    font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+    text-align: left; color: var(--muted); font-weight: 700;
+    border-bottom: 2px solid var(--ink);
+    padding: 0.45rem 0.9rem 0.45rem 0;
+  }
+  td { border-bottom: 1px solid var(--line); padding: 0.5rem 0.9rem 0.5rem 0; vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0.5rem; }
+  td code { white-space: nowrap; }
+  .status {
+    display: inline-block;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem; letter-spacing: 0.05em;
+    padding: 0.1rem 0.5rem; border-radius: 999px;
+    border: 1px solid currentColor; white-space: nowrap;
+  }
+  .status.pass { color: var(--good); }
+  .status.pend { color: var(--warn); }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    padding: 0.9rem 1.2rem;
+    margin: 1.4rem 0;
+    max-width: 72ch;
+  }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout p { margin: 0.3rem 0; }
+  figure { margin: 2rem 0; }
+  figcaption { font-size: 0.82rem; color: var(--muted); margin-top: 0.6rem; max-width: 72ch; }
+  .diagram-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; }
+  svg text { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  ul { padding-left: 1.2rem; }
+  li { margin: 0.32rem 0; }
+  .footnote { font-size: 0.85rem; color: var(--muted); }
+  .envgrid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 1rem; margin: 1.2rem 0;
+  }
+  .envcard {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 0.9rem 1.1rem; font-size: 0.86rem;
+  }
+  .envcard h4 { margin: 0 0 0.5rem; font-family: "Zilla Slab", serif; font-size: 1rem; }
+  .envcard dl { margin: 0; }
+  .envcard dt { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.5rem; }
+  .envcard dd { margin: 0.1rem 0 0; font-family: "IBM Plex Mono", monospace; font-size: 0.8rem; overflow-wrap: anywhere; }
+</style>
+</head><body>
+<nav style="border-bottom:1px solid var(--line); background:var(--surface);">
+  <div style="max-width:62rem;margin:0 auto;padding:0.55rem 1.25rem;display:flex;flex-wrap:wrap;gap:0.3rem 1.5rem;font-family:'IBM Plex Mono',monospace;font-size:0.8rem;">
+    <span style="color:var(--muted);">multi-GPU pair_nequip</span>
+    <a href="./" style="color:var(--accent);text-decoration:none;">evaluation</a>
+    <a href="usage.html" style="color:var(--accent);text-decoration:none;">usage</a>
+    <a href="pr-drafts.html" style="color:var(--accent);text-decoration:none;">PR drafts</a>
+    <a href="https://github.com/henriasv/nequip/tree/pr/multigpu" style="color:var(--accent);text-decoration:none;">nequip↗</a>
+    <a href="https://github.com/henriasv/pair_nequip_allegro/tree/pr/multigpu" style="color:var(--accent);text-decoration:none;">pair_nequip_allegro↗</a>
+  </div>
+</nav>
+<div class="page">
+<header class="doc">
+  <p class="eyebrow">Ready to paste</p>
+  <h1>Pull-request drafts</h1>
+  <p class="lede">Three coordinated PRs against the mir-group repositories, smallest first.
+  Each block below is GitHub-flavored markdown, ready to paste into the PR description.
+  Branches are on <code>henriasv/nequip</code> and <code>henriasv/pair_nequip_allegro</code>.</p>
+</header>
+
+<h2><span class="no">PR 0</span>nequip — ZBL local-ghost scatter fix</h2>
+<p>Branch <code>fix/zbl-local-ghost-scatter</code> → <code>mir-group/nequip</code> main.
+One file, +10/−7, independent of everything else.</p>
+<pre><code>## Summary
+
+`ZBL.forward` scatters per-edge energies into a per-atom buffer sized by the
+per-atom energy field. In a local-ghost context (the LAMMPS ML-IAP integration
+today) that field spans only the `nlocal` owned atoms, while `edge_center`
+still indexes ghost atoms up to `ntotal` — so the scatter with
+`dim_size=nlocal` is an out-of-bounds write whenever an edge is centered on a
+ghost atom.
+
+## Fix
+
+Scatter over all `ntotal` nodes (positions are never truncated, so
+`ntotal = positions.shape[0]`), then truncate the result to the owned count
+before adding it to the per-atom energy field — the same
+"compute-wide-then-truncate" pattern the conv stack uses
+(`tp_scatter(...)` then `x[:num_local_nodes]`).
+
+In the no-ghost case (`nlocal == ntotal`) the two formulations are identical,
+which the existing test suite confirms.
+
+## Testing
+
+- Full unit suite passes, and results are bit-identical to `main` in the
+  no-ghost paths.
+- Found while building a multi-rank `pair_nequip` path (follow-up PR), where
+  the local-ghost context made the OOB write reproducible.</code></pre>
+
+<h2><span class="no">PR 1</span>nequip — the <code>pair_nequip_multirank</code> compile target</h2>
+<p>Branch <code>pr/multigpu</code> → <code>mir-group/nequip</code> main.
++1134/−18 across 17 files (2 new modules, plus docs page and regression test), rebased on current main. Contains the PR 0 commit
+(rebase after PR 0 merges, or review together).</p>
+<pre><code>## Summary
+
+Adds a `pair_nequip_multirank` AOTInductor compile target: models compiled
+with it run LAMMPS-domain-decomposed across MPI ranks/GPUs with the
+`pair_nequip` pair style (companion PR in `pair_nequip_allegro`). The compiled
+model performs a per-layer ghost-feature exchange through a registered Torch
+custom op; LAMMPS installs the real implementation at load time.
+
+Two ideas make this exportable where the ML-IAP ghost exchange is eager-only:
+
+1. **The exchange op carries no LAMMPS handle in its signature**
+   (`nequip_lammps::ghost_exchange`, with its autograd transpose registered) —
+   the pair style reaches the op through a thread-local bridge, and with no
+   comm context the op is the identity (ASE / export tracing / single rank).
+2. **Truncate-to-nlocal via a backed dynamic dim**: the owned-atom count
+   enters the graph as the *shape* of a marker input, never via `.item()`, so
+   per-node ops slice to owned atoms without unbacked-symint guard failures.
+   Re-expansion before each exchange uses `slice_scatter` (not `cat`) to avoid
+   0/1-size specialization.
+
+## Also included
+
+- Custom-op `.so` embedding for `pair_*` targets so accelerated artifacts
+  (e.g. OpenEquivariance) are self-contained for a C++ consumer, plus a
+  `pair_nequip_feature_width` metadata stamp for exact LAMMPS comm sizing.
+- A version-robust auto-rebundle for packaged models predating this feature
+  (derives an era-matched overlay from the package's own bundled `nn`;
+  happy to split this out or keep it deployment-side — maintainer call).
+- Docs page (`docs/integrations/lammps/multirank.md`) and a CPU regression
+  test (`test_pair_nequip_multirank_matches_single_rank`: single-rank vs
+  multirank artifacts must agree at `nghost = 0`, plus metadata asserts).
+
+## Compatibility
+
+Additions only: the new input/target/modifier cannot activate for any
+existing model or workflow. Every touch of shared code is enumerated with a
+verdict in `UPSTREAM_DELTA.md` at the branch root. Unit suite passes
+identically to `main` in the same environment.
+
+## Validation (LUMI-G MI250X, 1–32 GCDs, production OAM models)
+
+Single-rank vs multi-rank PE exact at 1 rank; rank-invariance ~1e-6 eV/atom
+across 1/8/32 GCDs; max |ΔF| ~1e-5 eV/Å; cross-engine agreement with
+mliap/kk; ~2.2–2.6× higher strong-scaling throughput ceiling than mliap/kk
+with identical OEQ kernels (parity when compute-bound, as expected).
+Full evaluation document with benchmarks and environments:
+https://henriasv.github.io/pair_nequip_allegro/</code></pre>
+
+<h2><span class="no">PR 2</span>pair_nequip_allegro — multi-rank pair style</h2>
+<p>Branch <code>pr/multigpu</code> → <code>mir-group/pair_nequip_allegro</code> main.
++792/−22 in the four pair-style sources only. Runtime-inert without a PR 1 model.</p>
+<pre><code>## Summary
+
+Native multi-GPU `pair_style nequip` for models compiled with nequip's new
+`pair_nequip_multirank` target (companion PR in `nequip`). The compiled model
+calls `nequip_lammps::ghost_exchange` between layers; this PR registers the
+real implementations and routes them through LAMMPS communication:
+
+- **Plain pair**: host-staged halo via `Comm::forward_comm/reverse_comm` and
+  the standard pair pack/unpack callbacks.
+- **Kokkos** (`pair_style nequip/kk`, new instantiation): device-resident —
+  pack/unpack kernels index the live feature tensor by the device sendlist,
+  exchanged via `CommKokkos::*_comm_device` (GPU-aware MPI), reverse path
+  accumulates with atomic adds and zeroes ghost-row gradients.
+- Multi-rank input build in LAMMPS atom order (real ghost positions ⇒ zero
+  `edge_cell_shift`, no tag remap), owned-only energy accounting, ghost
+  forces home via standard Newton reverse comm (`newton on` required).
+- Model capability is auto-detected from the declared inputs and
+  cross-checked against compile metadata; comm buffers are sized exactly
+  from the model's `pair_nequip_feature_width` stamp (non-multirank models
+  keep upstream's zero comm footprint).
+- Robustness: actionable error for a single-rank model on N ranks (includes
+  the recompile command); a clean error instead of a segfault on a second
+  in-process AOT model load (e.g. after `clear`); custom-op `.so` loading
+  from the artifact for accelerated models (also fixes single-rank OEQ
+  models in plain C++ LAMMPS).
+
+## Compatibility
+
+`is_multirank` can only become true for a model that declares the new input —
+impossible for anything compiled before this feature. The upstream code paths
+are preserved verbatim (force loop in an `else` branch); the few shared-path
+touches are enumerated with verdicts in `UPSTREAM_DELTA.md` at the branch
+root.
+
+## Validation
+
+Compiles on LUMI (hipcc, Kokkos/HIP gfx90a, C++20, LAMMPS patch_30Mar2026)
+and CUDA; correctness gate (single-rank reference vs multirank artifact,
+1 rank with ghosts) passes exactly; PE rank-invariant 1/8/32 GCDs to ~1e-6
+eV/atom; benchmarks and environments:
+https://henriasv.github.io/pair_nequip_allegro/</code></pre>
+</div>
+</body></html>
