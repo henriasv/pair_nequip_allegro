@@ -50,6 +50,7 @@
 
 #include <dlfcn.h>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <unistd.h>
 
@@ -110,14 +111,14 @@ template <bool nequip_mode> PairNequIPAllegro<nequip_mode>::PairNequIPAllegro(LA
   restartinfo = 0;
   manybody_flag = 1;
 
-  // Size the LAMMPS forward/reverse comm buffers for the per-layer ghost-feature halo (Route 2b).
-  // `Comm::init()` allocates `buf_send`/`buf_recv` from `max(comm_forward, comm_reverse)` BEFORE
-  // any compute, and `forward_comm(this, size)` does NOT grow them -- so this must be set here
-  // (constructor runs before `comm->init()`, order-independently), large enough for the widest
-  // per-node feature vector exchanged. OAM-S node features are 320 doubles/node; OAM-M is larger.
-  // 2048 covers OAM-S/M with headroom; `*_exchange()` hard-errors if a model ever exceeds it
-  // (rather than silently overflowing the buffer and corrupting the heap). Harmless for the
-  // single-rank/allegro paths (just a slightly larger, unused buffer).
+  // Bounded DEFAULT sizing for the per-layer ghost-feature halo (Route 2b), refined in
+  // `coeff()` once the model is known: exact width from the model's
+  // `pair_nequip_feature_width` metadata stamp, or 0 for non-multirank models (this pair
+  // then never initiates comm). LAMMPS sizes `buf_send`/`buf_recv` from
+  // `max(comm_forward, comm_reverse)` at setup (after pair_coeff) and `forward_comm(this,
+  // size)` does NOT grow them. The default only remains in force for older multirank
+  // models compiled before the width stamp existed; `*_exchange()` hard-errors if a model
+  // ever exceeds it (rather than silently overflowing the buffer and corrupting the heap).
   comm_forward = 2048;
   comm_reverse = 2048;
 
@@ -557,6 +558,33 @@ template <bool nequip_mode> void PairNequIPAllegro<nequip_mode>::coeff(int narg,
     if (is_multirank && comm->me == 0)
       std::cout << "NequIP: multi-rank model detected -- per-layer ghost exchange enabled\n";
 #endif
+  }
+
+  // === exact comm sizing (refines the constructor's bounded default) ===
+  // This runs before LAMMPS allocates the comm buffers (Comm sizes them from
+  // comm_forward/comm_reverse at setup, after all pair_coeff commands), so the values set
+  // here are the ones that stick.
+  if (is_multirank) {
+    // `nequip-compile` stamps the widest per-node feature width (doubles/atom) that the
+    // per-layer ghost exchange will move. Present => size the buffers exactly; absent
+    // (older multirank model) => keep the constructor's bounded default, guarded by the
+    // hard-error in `*_exchange_t` if a model ever exceeds it.
+    auto itw = metadata.find("pair_nequip_feature_width");
+    if (itw != metadata.end()) {
+      const int w = std::atoi(itw->second.c_str());
+      if (w > 0) {
+        comm_forward = w;
+        comm_reverse = w;
+        if (comm->me == 0)
+          std::cout << "NequIP: comm buffers sized exactly for the per-layer feature width ("
+                    << w << " doubles/atom)\n";
+      }
+    }
+  } else {
+    // Not a multi-rank model: this pair never initiates forward/reverse comm, so restore
+    // the upstream default (no per-atom comm buffer contribution from this pair).
+    comm_forward = 0;
+    comm_reverse = 0;
   }
 
   // === process metadata information ===
@@ -1185,11 +1213,14 @@ torch::Tensor PairNequIPAllegro<nequip_mode>::forward_exchange_t(const torch::Te
   auto f = node_features.contiguous();
   const int64_t ntotal = f.size(0);
   const int ncol = ntotal > 0 ? static_cast<int>(f.numel() / ntotal) : 0;
-  // `comm_forward` (set in the constructor) sized `buf_send`/`buf_recv`; `pack_forward_comm`
-  // writes `ncol` doubles/atom into them. Exceeding that bound would overflow the buffer.
+  // `comm_forward` (exact from the model's width stamp, or the bounded default for older
+  // models -- see `coeff()`) sized `buf_send`/`buf_recv`; `pack_forward_comm` writes `ncol`
+  // doubles/atom into them. Exceeding that bound would overflow the buffer.
   if (ncol > comm_forward)
-    error->all(FLERR, "pair_nequip per-layer feature width exceeds the comm buffer; "
-                      "increase comm_forward/comm_reverse in PairNequIPAllegro");
+    error->all(FLERR, "pair_nequip per-layer feature width ({} doubles/atom) exceeds the comm "
+                      "buffer sizing ({}); re-compile the model with a nequip that stamps "
+                      "pair_nequip_feature_width, or raise the default in PairNequIPAllegro",
+               ncol, comm_forward);
   auto cpu = f.to(torch::kCPU, torch::kDouble).contiguous();
   exch_buf = cpu.data_ptr<double>();
   exch_ncol = ncol;
@@ -1206,8 +1237,10 @@ torch::Tensor PairNequIPAllegro<nequip_mode>::reverse_exchange_t(const torch::Te
   const int64_t ntot_t = g.size(0);
   const int ncol = ntot_t > 0 ? static_cast<int>(g.numel() / ntot_t) : 0;
   if (ncol > comm_reverse)
-    error->all(FLERR, "pair_nequip per-layer feature width exceeds the comm buffer; "
-                      "increase comm_forward/comm_reverse in PairNequIPAllegro");
+    error->all(FLERR, "pair_nequip per-layer feature width ({} doubles/atom) exceeds the comm "
+                      "buffer sizing ({}); re-compile the model with a nequip that stamps "
+                      "pair_nequip_feature_width, or raise the default in PairNequIPAllegro",
+               ncol, comm_reverse);
   auto cpu = g.to(torch::kCPU, torch::kDouble).contiguous();
   double *buf = cpu.data_ptr<double>();
   exch_buf = buf;
