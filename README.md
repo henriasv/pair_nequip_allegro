@@ -34,8 +34,15 @@ where `my-compiled-model.nequip.pth/pt2` is the filename of your trained and **c
 The names after the model file name indicate, in order, the names of the model's atom types to use for LAMMPS atom types 1, 2, and so on. The number of names given must be equal to the number of atom types in the LAMMPS configuration (not the NequIP/Allegro model!).
 The given names must be consistent with the model's type names that were specified in its training YAML file in the `type_names` option (under `training_module.model`). Typically, this will be the chemical symbol for each LAMMPS type.
 
+### Multi-GPU `pair_nequip` (multirank models)
+`pair_nequip` is single-rank for ordinary compiled models, but models compiled with
+```bash
+nequip-compile model.nequip.zip model.nequip.pt2 --mode aotinductor --device cuda --target pair_nequip_multirank
+```
+run LAMMPS-domain-decomposed across MPI ranks and GPUs: the compiled model performs a per-layer ghost-feature exchange through LAMMPS communication (device-resident under Kokkos). Usage is identical to single-rank `pair_nequip` except that `newton on` is required; the pair style detects multi-rank capability from the model automatically, and a single-rank model run on several ranks aborts with an error containing the exact recompile command. See the [NequIP docs page on multi-GPU `pair_nequip`](https://nequip.readthedocs.io) for details, including acceleration modifiers (e.g. OpenEquivariance) whose custom-op libraries are embedded in the `.pt2` for LAMMPS to load.
+
 ### Running with Kokkos
-To run with Kokkos (only supported for Allegro models), please see the [LAMMPS Kokkos documentation](https://docs.lammps.org/Speed_kokkos.html#running-on-gpus). Example:
+To run with Kokkos (supported for Allegro models and multirank NequIP models), please see the [LAMMPS Kokkos documentation](https://docs.lammps.org/Speed_kokkos.html#running-on-gpus). Example:
 ```bash
 mpirun -np 8 lmp -sf kk -k on g 4 -pk kokkos newton on neigh half -in in.script
 ```
