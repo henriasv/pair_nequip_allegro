@@ -111,7 +111,7 @@ All touches of *shared* (pre-existing) code paths, exhaustively:
 
 | # | Change | Effect on existing behavior |
 |---|--------|------------------------------|
-| 1 | `comm_forward = comm_reverse = 2048` set in the pair constructor | None on results. LAMMPS allocates its comm buffers from the max over pair/fix requests before the first compute; the halo needs them sized for the widest per-layer feature row. For non-multirank runs the larger buffer is simply unused memory. *Known debt: replace the constant with exact sizing from a warmup forward; the exchange hard-errors (no overflow) if a model exceeds it.* |
+| 1 | Comm-buffer sizing: constructor sets a bounded default (`comm_forward/reverse = 2048`); `coeff()` refines it once the model is known — **exact** width from the model's `pair_nequip_feature_width` metadata stamp (written by `nequip-compile`) for multirank models, **zero** for everything else | None on results. Non-multirank models (all pre-existing ones) get `comm_forward = comm_reverse = 0`, i.e. exactly upstream's memory behavior. Multirank models get exactly-sized buffers; only a multirank model compiled before the stamp existed falls back to the bounded default, still guarded by a hard-error (never overflow) in the exchange. |
 | 2 | Single-rank restriction moved from constructor to `init_style()` | Same protection, later (but still before any run), better message. Required because multi-rank capability is only known after `coeff()`. |
 | 3 | `AOTIModelPackageLoader` now constructed with explicit `device_index` | On 1 GPU: identical (index 0). On multi-GPU it is a correctness fix: the default places every rank's weights on `cuda:0` while inputs live on `cuda:r` → cross-device fault. |
 | 4 | `c10::OptionalDeviceGuard` pinning the rank's device around each model call | Same rationale as 3; no-op on single GPU. |
@@ -142,9 +142,12 @@ GCDs, real production models (OAM-S/M and a fine-tuned OAM-M):
   small-per-GCD regime (e.g. MgO+water 2880 atoms: 77 vs 35 ts/s; Cu 2048: 98 vs 38);
   markedly lower run-to-run variance multi-node.
 
-Not yet done (needed for an upstream PR, tracked):
-- exact comm-buffer sizing to replace the 2048 constant (audit row 1);
-- upstream-style docs page and a CI-runnable correctness test;
+Since resolved on this branch: exact comm-buffer sizing (audit row 1); a README usage
+section for multi-GPU `pair_nequip`; a CPU-runnable regression test of the export path
+(in the `nequip` fork's test suite); and the branch itself compiles and passes the
+correctness gate + `clear`-guard repro on LUMI.
+
+Still open:
 - compile verification is LUMI/ROCm + CUDA only so far (no CPU-Kokkos build tested);
-- this branch itself has not been rebuilt on LUMI since the diagnostic removal
-  (`m4_diag_done`, a pure deletion) — the deployed frozen module predates it.
+- the deployed frozen production module predates this branch (by design — it is never
+  rebuilt in place); a new module suffix would be cut from this branch when needed.
