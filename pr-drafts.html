@@ -1,186 +1,198 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Multi-GPU pair_nequip PR drafts</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Public+Sans:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
+  /* Furo-like theme (matching nequip.readthedocs.io): Furo default tokens, system
+     font stacks, justified paragraphs per upstream custom.css. */
   :root {
-    --bg: #FAFAF7;
-    --ink: #1C2321;
-    --muted: #5A6763;
-    --line: #D8DDD9;
-    --accent: #0E7C86;
-    --copper: #A66430;
-    --surface: #F1F2EE;
-    --code-bg: #ECEFEC;
-    --good: #2E7D4F;
-    --warn: #9A6A1B;
-    --bad: #A63A32;
+    --brand: #2962ff;            /* --color-brand-primary */
+    --link: #2a5adf;             /* --color-brand-content */
+    --fg: #000000;               /* --color-foreground-primary */
+    --fg-2: #5a5c63;             /* --color-foreground-secondary */
+    --muted: #646776;            /* --color-foreground-muted */
+    --bg: #ffffff;               /* --color-background-primary */
+    --bg-2: #f8f9fb;             /* --color-background-secondary */
+    --line: #eeebee;             /* --color-background-border */
+    --code-bg: #f8f9fb;
+    --admonition-note: #00b0ff;  /* furo note accent */
+    --admonition-warn: #ff9100;  /* furo caution accent */
+    --good: #00c852;             /* furo tip accent */
+    --bad: #ff1744;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #141A19;
-      --ink: #E6EBE8;
-      --muted: #93A09B;
-      --line: #2C3533;
-      --accent: #46B8C2;
-      --copper: #D49463;
-      --surface: #1B2220;
-      --code-bg: #1A211F;
-      --good: #5CBF8A;
-      --warn: #D2A55A;
-      --bad: #DB8078;
+      --brand: #2b8cee;
+      --link: #368ce2;
+      --fg: #ffffffcc;
+      --fg-2: #9ca0a5;
+      --muted: #81868d;
+      --bg: #131416;
+      --bg-2: #1a1c1e;
+      --line: #303335;
+      --code-bg: #1a1c1e;
+      --admonition-note: #00b0ff;
+      --admonition-warn: #ff9100;
+      --good: #00c852;
+      --bad: #ff5252;
     }
   }
   :root[data-theme="dark"] {
-    --bg: #141A19;
-    --ink: #E6EBE8;
-    --muted: #93A09B;
-    --line: #2C3533;
-    --accent: #46B8C2;
-    --copper: #D49463;
-    --surface: #1B2220;
-    --code-bg: #1A211F;
-    --good: #5CBF8A;
-    --warn: #D2A55A;
-    --bad: #DB8078;
+    --brand: #2b8cee;
+    --link: #368ce2;
+    --fg: #ffffffcc;
+    --fg-2: #9ca0a5;
+    --muted: #81868d;
+    --bg: #131416;
+    --bg-2: #1a1c1e;
+    --line: #303335;
+    --code-bg: #1a1c1e;
+    --admonition-note: #00b0ff;
+    --admonition-warn: #ff9100;
+    --good: #00c852;
+    --bad: #ff5252;
   }
   * { box-sizing: border-box; }
   body {
     background: var(--bg);
-    color: var(--ink);
-    font-family: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
+      sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
     font-size: 1rem;
-    line-height: 1.6;
+    line-height: 1.5;
     margin: 0;
-    padding: 0 1.25rem 5rem;
   }
-  .page { max-width: 62rem; margin: 0 auto; }
-  header.doc { padding: 3.5rem 0 2rem; border-bottom: 2px solid var(--ink); }
+  /* --- Furo shell: fixed sidebar + centered article (Pages site) --- */
+  .shell { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: 15em; flex: 0 0 15em;
+    background: var(--bg-2);
+    border-right: 1px solid var(--line);
+    padding: 1.5rem 1rem 2rem;
+    font-size: 0.875rem;
+  }
+  .sidebar .wordmark { font-weight: 700; font-size: 1.05rem; color: var(--fg); margin: 0 0 0.2rem; }
+  .sidebar .wordsub { color: var(--muted); font-size: 0.78rem; margin: 0 0 1.4rem; }
+  .sidebar .caption {
+    color: var(--fg-2); font-size: 0.72rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em; margin: 1.4rem 0 0.4rem;
+  }
+  .sidebar a { display: block; color: var(--fg-2); text-decoration: none; padding: 0.2rem 0.4rem; border-radius: 0.2rem; }
+  .sidebar a:hover { background: var(--line); color: var(--fg); }
+  .sidebar a.current { color: var(--brand); font-weight: 600; }
+  .main { flex: 1 1 auto; min-width: 0; }
+  .page { max-width: 46em; margin: 0 auto; padding: 0 1.5rem 5rem; }
+  @media (max-width: 900px) {
+    .shell { display: block; }
+    .sidebar { width: auto; border-right: none; border-bottom: 1px solid var(--line); padding: 0.8rem 1.25rem; }
+    .sidebar .caption { display: none; }
+    .sidebar a { display: inline-block; margin-right: 0.8rem; }
+    .sidebar .wordsub { margin-bottom: 0.4rem; }
+  }
+  /* --- article typography (Furo) --- */
+  header.doc { padding: 2.5rem 0 1.25rem; border-bottom: 1px solid var(--line); margin-bottom: 0.5rem; }
   .eyebrow {
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 0.78rem;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin: 0 0 0.9rem;
+    font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--brand); font-weight: 700; margin: 0 0 0.6rem;
   }
-  h1 {
-    font-family: "Zilla Slab", Georgia, serif;
-    font-weight: 700;
-    font-size: clamp(2.1rem, 5vw, 3.1rem);
-    line-height: 1.08;
-    margin: 0 0 1.1rem;
-    text-wrap: balance;
+  h1 { font-size: 2.25em; font-weight: 700; line-height: 1.15; margin: 0 0 0.8rem; text-wrap: balance; }
+  .lede { font-size: 1.05rem; color: var(--fg); margin: 0 0 1.2rem; text-align: justify; }
+  .meta { display: flex; flex-wrap: wrap; gap: 0.3rem 1.6rem; font-size: 0.82rem; color: var(--muted); }
+  .meta b { color: var(--fg); font-weight: 600; }
+  nav.toc { margin: 1.2rem 0 0; padding-top: 0.9rem; border-top: 1px solid var(--line);
+    font-size: 0.875rem; display: flex; flex-wrap: wrap; gap: 0.3rem 1.4rem; }
+  nav.toc a { color: var(--link); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  nav.toc .n { color: var(--muted); margin-right: 0.3em; font-variant-numeric: tabular-nums; }
+  h2 { font-size: 1.55em; font-weight: 700; margin: 2.6rem 0 0.7rem; text-wrap: balance; }
+  h2 .no { color: var(--brand); margin-right: 0.5rem; font-variant-numeric: tabular-nums; }
+  h3 { font-size: 1.2em; font-weight: 700; margin: 1.8rem 0 0.5rem; }
+  h4 { font-size: 1em; font-weight: 700; margin: 1.3rem 0 0.4rem; }
+  p { text-align: justify; }
+  li p { text-align: justify; }
+  a { color: var(--link); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--link) 40%, transparent); text-underline-offset: 2px; }
+  a:hover { text-decoration-color: var(--link); }
+  code, .mono {
+    font-family: "SFMono-Regular", Menlo, Consolas, Monaco, "Liberation Mono",
+      "Lucida Console", monospace;
+    font-size: 0.875em;
   }
-  .lede { font-size: 1.08rem; max-width: 64ch; margin: 0 0 1.6rem; }
-  .meta {
-    display: flex; flex-wrap: wrap; gap: 0.4rem 2rem;
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 0.8rem; color: var(--muted);
-  }
-  .meta b { color: var(--ink); font-weight: 500; }
-  nav.toc {
-    margin: 1.6rem 0 0;
-    padding: 1rem 0 0;
-    border-top: 1px solid var(--line);
-    font-size: 0.88rem;
-    display: flex; flex-wrap: wrap; gap: 0.3rem 1.6rem;
-  }
-  nav.toc a { color: var(--ink); text-decoration: none; }
-  nav.toc a:hover { color: var(--accent); }
-  nav.toc .n { color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: 0.8em; margin-right: 0.3em; }
-  h2 {
-    font-family: "Zilla Slab", Georgia, serif;
-    font-weight: 600;
-    font-size: 1.6rem;
-    margin: 3.2rem 0 0.8rem;
-    text-wrap: balance;
-  }
-  h2 .no { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 0.55rem; }
-  h3 {
-    font-family: "Zilla Slab", Georgia, serif;
-    font-weight: 600;
-    font-size: 1.18rem;
-    margin: 2rem 0 0.5rem;
-  }
-  h4 {
-    font-size: 0.98rem;
-    margin: 1.4rem 0 0.4rem;
-  }
-  p, li { max-width: 72ch; }
-  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
-  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.86em; }
-  code { background: var(--code-bg); border-radius: 3px; padding: 0.08em 0.32em; }
+  code { background: var(--code-bg); border: 1px solid var(--line); border-radius: 0.2em; padding: 0.1em 0.25em; }
   pre {
     background: var(--code-bg);
     border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 0.9rem 1.1rem;
+    border-radius: 0.2rem;
+    padding: 0.75rem 1rem;
     overflow-x: auto;
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 0.82rem;
+    font-family: "SFMono-Regular", Menlo, Consolas, Monaco, "Liberation Mono",
+      "Lucida Console", monospace;
+    font-size: 0.8125rem;
     line-height: 1.5;
   }
-  pre code { background: none; padding: 0; }
-  .tablewrap { overflow-x: auto; margin: 1.2rem 0; }
-  table { border-collapse: collapse; width: 100%; font-size: 0.89rem; }
+  pre code { background: none; border: none; padding: 0; }
+  .tablewrap { overflow-x: auto; margin: 1.1rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.875rem; }
   th {
-    font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
-    text-align: left; color: var(--muted); font-weight: 700;
-    border-bottom: 2px solid var(--ink);
-    padding: 0.45rem 0.9rem 0.45rem 0;
+    font-size: 0.75rem; text-align: left; color: var(--fg);
+    font-weight: 700; border-bottom: 2px solid var(--line);
+    padding: 0.4rem 0.9rem 0.4rem 0;
   }
   td { border-bottom: 1px solid var(--line); padding: 0.5rem 0.9rem 0.5rem 0; vertical-align: top; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0.5rem; }
   td code { white-space: nowrap; }
   .status {
-    display: inline-block;
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 0.72rem; letter-spacing: 0.05em;
-    padding: 0.1rem 0.5rem; border-radius: 999px;
-    border: 1px solid currentColor; white-space: nowrap;
+    display: inline-block; font-size: 0.72rem; font-weight: 600;
+    padding: 0.1rem 0.5rem; border-radius: 0.2rem; white-space: nowrap;
   }
-  .status.pass { color: var(--good); }
-  .status.pend { color: var(--warn); }
+  .status.pass { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+  .status.pend { color: var(--admonition-warn); background: color-mix(in srgb, var(--admonition-warn) 14%, transparent); }
+  /* Furo-style admonitions */
   .callout {
-    border-left: 3px solid var(--accent);
-    background: var(--surface);
-    padding: 0.9rem 1.2rem;
-    margin: 1.4rem 0;
-    max-width: 72ch;
+    border-radius: 0.2rem;
+    background: var(--bg-2);
+    border-left: 0.2rem solid var(--admonition-note);
+    padding: 0.7rem 1rem;
+    margin: 1.3rem 0;
+    font-size: 0.95rem;
   }
-  .callout.warn { border-left-color: var(--warn); }
+  .callout.warn { border-left-color: var(--admonition-warn); }
   .callout p { margin: 0.3rem 0; }
-  figure { margin: 2rem 0; }
-  figcaption { font-size: 0.82rem; color: var(--muted); margin-top: 0.6rem; max-width: 72ch; }
-  .diagram-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; }
-  svg text { font-family: "IBM Plex Mono", ui-monospace, monospace; }
-  ul { padding-left: 1.2rem; }
-  li { margin: 0.32rem 0; }
-  .footnote { font-size: 0.85rem; color: var(--muted); }
-  .envgrid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-    gap: 1rem; margin: 1.2rem 0;
-  }
-  .envcard {
-    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
-    padding: 0.9rem 1.1rem; font-size: 0.86rem;
-  }
-  .envcard h4 { margin: 0 0 0.5rem; font-family: "Zilla Slab", serif; font-size: 1rem; }
+  figure { margin: 1.8rem 0; }
+  figcaption { font-size: 0.82rem; color: var(--muted); margin-top: 0.6rem; text-align: justify; }
+  .diagram-wrap { overflow-x: auto; background: var(--bg-2); border: 1px solid var(--line); border-radius: 0.2rem; padding: 1rem; }
+  svg text { font-family: "SFMono-Regular", Menlo, Consolas, monospace; }
+  ul { padding-left: 1.4rem; }
+  li { margin: 0.3rem 0; }
+  .footnote { font-size: 0.85rem; color: var(--muted); text-align: justify; }
+  .envgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.9rem; margin: 1.1rem 0; }
+  .envcard { background: var(--bg-2); border: 1px solid var(--line); border-radius: 0.2rem; padding: 0.8rem 1rem; font-size: 0.85rem; }
+  .envcard h4 { margin: 0 0 0.4rem; font-size: 0.95rem; }
   .envcard dl { margin: 0; }
-  .envcard dt { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.5rem; }
-  .envcard dd { margin: 0.1rem 0 0; font-family: "IBM Plex Mono", monospace; font-size: 0.8rem; overflow-wrap: anywhere; }
+  .envcard dt { color: var(--fg-2); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.5rem; font-weight: 700; }
+  .envcard dd { margin: 0.1rem 0 0; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.78rem; overflow-wrap: anywhere; }
+</style>
+<style>
+  :root { --accent: var(--brand); --ink: var(--fg); --copper: #7c4dff; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --copper: #b388ff; } }
+  :root[data-theme="dark"] { --copper: #b388ff; }
 </style>
 </head><body>
-<nav style="border-bottom:1px solid var(--line); background:var(--surface);">
-  <div style="max-width:62rem;margin:0 auto;padding:0.55rem 1.25rem;display:flex;flex-wrap:wrap;gap:0.3rem 1.5rem;font-family:'IBM Plex Mono',monospace;font-size:0.8rem;">
-    <span style="color:var(--muted);">multi-GPU pair_nequip</span>
-    <a href="./" style="color:var(--accent);text-decoration:none;">evaluation</a>
-    <a href="usage.html" style="color:var(--accent);text-decoration:none;">usage</a>
-    <a href="pr-drafts.html" style="color:var(--accent);text-decoration:none;">PR drafts</a>
-    <a href="https://github.com/henriasv/nequip/tree/pr/multigpu" style="color:var(--accent);text-decoration:none;">nequip↗</a>
-    <a href="https://github.com/henriasv/pair_nequip_allegro/tree/pr/multigpu" style="color:var(--accent);text-decoration:none;">pair_nequip_allegro↗</a>
-  </div>
-</nav>
+<div class="shell">
+<aside class="sidebar">
+  <p class="wordmark">NequIP</p>
+  <p class="wordsub">multi-GPU pair_nequip — fork docs (henriasv)</p>
+  <p class="caption">Documentation</p>
+  <a href="./" class="">PR evaluation</a>
+  <a href="usage.html" class="">Usage guide</a>
+  <a href="pr-drafts.html" class="current">PR drafts</a>
+  <p class="caption">Branches</p>
+  <a href="https://github.com/henriasv/nequip/tree/pr/multigpu">nequip · pr/multigpu</a>
+  <a href="https://github.com/henriasv/pair_nequip_allegro/tree/pr/multigpu">pair_nequip_allegro · pr/multigpu</a>
+  <a href="https://github.com/henriasv/nequip/tree/fix/zbl-local-ghost-scatter">nequip · fix/zbl…scatter</a>
+  <p class="caption">Upstream</p>
+  <a href="https://nequip.readthedocs.io">NequIP docs</a>
+  <a href="https://github.com/mir-group/nequip">mir-group/nequip</a>
+  <a href="https://github.com/mir-group/pair_nequip_allegro">mir-group/pair_nequip_allegro</a>
+</aside>
+<div class="main">
 <div class="page">
 <header class="doc">
   <p class="eyebrow">Ready to paste</p>
@@ -317,4 +329,4 @@ and CUDA; correctness gate (single-rank reference vs multirank artifact,
 eV/atom; benchmarks and environments:
 https://henriasv.github.io/pair_nequip_allegro/</code></pre>
 </div>
-</body></html>
+</div></div></body></html>
