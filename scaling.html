@@ -1,0 +1,392 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-GPU pair_nequip scaling analysis</title>
+<style>
+  :root {
+    --brand: #2962ff; --link: #2a5adf; --fg: #000000; --fg-2: #5a5c63;
+    --muted: #646776; --bg: #ffffff; --bg-2: #f8f9fb; --line: #eeebee;
+    --code-bg: #f8f9fb; --inline-code-bg: #eff1f4;
+    --s1: #2962ff;   /* series: pair_nequip / OEQ / small load  (validated) */
+    --s2: #00997d;   /* series: mliap / no-OEQ / large load     (validated) */
+    --ref: #9aa0a6;  /* neutral reference (ideal scaling) */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --brand: #2b8cee; --link: #368ce2; --fg: #ffffffcc; --fg-2: #9ca0a5;
+      --muted: #81868d; --bg: #131416; --bg-2: #1a1c1e; --line: #303335;
+      --code-bg: #1a1c1e; --inline-code-bg: #222527;
+      --s1: #4d82e8; --s2: #1ca894; --ref: #6f7378;
+    }
+  }
+  :root[data-theme="dark"] {
+    --brand: #2b8cee; --link: #368ce2; --fg: #ffffffcc; --fg-2: #9ca0a5;
+    --muted: #81868d; --bg: #131416; --bg-2: #1a1c1e; --line: #303335;
+    --code-bg: #1a1c1e; --inline-code-bg: #222527;
+    --s1: #4d82e8; --s2: #1ca894; --ref: #6f7378;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 1rem; line-height: 1.5; margin: 0; }
+  .shell { display: flex; min-height: 100vh; max-width: 84rem; margin: 0 auto; }
+  .sidebar { width: 16em; flex: 0 0 16em; border-right: 1px solid var(--line);
+    padding: 2.2rem 1.25rem 2rem 1.5rem; font-size: 0.875rem;
+    position: sticky; top: 0; align-self: flex-start; max-height: 100vh; overflow-y: auto; }
+  .sidebar .wordmark { font-weight: 700; font-size: 1.05rem; color: var(--fg); margin: 0 0 0.2rem; }
+  .sidebar .wordsub { color: var(--muted); font-size: 0.78rem; margin: 0 0 1.4rem; }
+  .sidebar .caption { color: var(--fg-2); font-size: 0.72rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em; margin: 1.4rem 0 0.4rem; }
+  .sidebar a { display: block; color: var(--fg-2); text-decoration: none; padding: 0.22rem 0.5rem;
+    margin-left: -0.5rem; border-radius: 0.25rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sidebar a:hover { background: var(--bg-2); color: var(--fg); }
+  .sidebar a.current { color: var(--brand); font-weight: 600; }
+  .main { flex: 1 1 auto; min-width: 0; }
+  .page { max-width: 50em; margin: 0 auto; padding: 0 2rem 5rem; }
+  @media (max-width: 900px) {
+    .shell { display: block; }
+    .sidebar { width: auto; border-right: none; border-bottom: 1px solid var(--line);
+      padding: 0.8rem 1.25rem; position: static; max-height: none; }
+    .sidebar .caption { display: none; }
+    .sidebar a { display: inline-block; margin-right: 0.8rem; }
+    .sidebar .wordsub { margin-bottom: 0.4rem; }
+  }
+  header.doc { padding: 2.5rem 0 1.25rem; border-bottom: 1px solid var(--line); margin-bottom: 0.5rem; }
+  .eyebrow { font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--brand); font-weight: 700; margin: 0 0 0.6rem; }
+  h1 { font-size: 2.25em; font-weight: 700; line-height: 1.15; margin: 0 0 0.8rem; text-wrap: balance; }
+  .lede { font-size: 1.05rem; color: var(--fg); margin: 0 0 1.2rem; }
+  h2 { font-size: 1.55em; font-weight: 700; margin: 2.6rem 0 0.7rem; text-wrap: balance; }
+  h2 .no { color: var(--brand); margin-right: 0.5rem; font-variant-numeric: tabular-nums; }
+  h3 { font-size: 1.2em; font-weight: 700; margin: 1.8rem 0 0.5rem; }
+  p { max-width: 72ch; }
+  a { color: var(--link); text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--link) 40%, transparent); text-underline-offset: 2px; }
+  a:hover { text-decoration-color: var(--link); }
+  code { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.875em;
+    background: var(--inline-code-bg); border-radius: 0.25em; padding: 0.12em 0.32em; }
+  .tablewrap { overflow-x: auto; margin: 1.1rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.875rem; }
+  th { font-size: 0.75rem; text-align: left; color: var(--fg); font-weight: 700; white-space: nowrap;
+    border-bottom: 2px solid var(--line); padding: 0.4rem 0.9rem 0.4rem 0; }
+  td { border-bottom: 1px solid var(--line); padding: 0.5rem 0.9rem 0.5rem 0; vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0.5rem; }
+  .callout { border-radius: 0.2rem; background: var(--bg-2); border-left: 0.2rem solid var(--brand);
+    padding: 0.7rem 1rem; margin: 1.3rem 0; font-size: 0.95rem; }
+  .callout p { margin: 0.3rem 0; }
+  .footnote { font-size: 0.85rem; color: var(--muted); }
+  /* chart figure */
+  .fig { margin: 1.6rem 0; }
+  .fig .panel { background: var(--bg); border: 1px solid var(--line); border-radius: 0.3rem; padding: 0.8rem 0.8rem 0.4rem; }
+  .fig h4 { margin: 0 0 0.15rem; font-size: 0.95rem; font-weight: 700; }
+  .fig .sub { margin: 0 0 0.5rem; font-size: 0.8rem; color: var(--muted); }
+  .fig svg { display: block; width: 100%; height: auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.35rem 1.3rem; font-size: 0.8rem; color: var(--fg-2); margin: 0.4rem 0 0.2rem; }
+  .legend .k { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; }
+  .sw.dot::after { content: ""; }
+  .figcap { font-size: 0.82rem; color: var(--muted); margin: 0.5rem 0 0; max-width: 72ch; }
+  details { margin: 0.5rem 0 0; font-size: 0.85rem; }
+  details summary { cursor: pointer; color: var(--fg-2); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 1rem; }
+  #tip { position: fixed; pointer-events: none; background: var(--fg); color: var(--bg);
+    font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.25rem; opacity: 0;
+    transition: opacity 0.08s; z-index: 10; white-space: nowrap; }
+</style>
+</head><body>
+<div class="shell">
+<aside class="sidebar">
+  <p class="wordmark">NequIP</p>
+  <p class="wordsub">multi-GPU pair_nequip — fork docs (henriasv)</p>
+  <p class="caption">Documentation</p>
+  <a href="./">PR evaluation</a>
+  <a href="usage.html">Usage guide</a>
+  <a href="scaling.html" class="current">Scaling analysis</a>
+  <a href="pr-drafts.html">PR drafts</a>
+  <p class="caption">Branches</p>
+  <a href="https://github.com/henriasv/nequip/tree/pr/multigpu" title="henriasv/nequip pr/multigpu">nequip · pr/multigpu</a>
+  <a href="https://github.com/henriasv/pair_nequip_allegro/tree/pr/multigpu" title="henriasv/pair_nequip_allegro pr/multigpu">pair_allegro · pr/multigpu</a>
+  <a href="https://github.com/henriasv/nequip/tree/fix/zbl-local-ghost-scatter" title="henriasv/nequip fix/zbl-local-ghost-scatter">nequip · zbl fix</a>
+  <p class="caption">Upstream</p>
+  <a href="https://nequip.readthedocs.io">NequIP docs</a>
+  <a href="https://github.com/mir-group/nequip">mir-group/nequip</a>
+  <a href="https://github.com/mir-group/pair_nequip_allegro" title="mir-group/pair_nequip_allegro">mir-group/pair_allegro</a>
+</aside>
+<div class="main">
+<div class="page">
+<header class="doc">
+  <p class="eyebrow">Scaling analysis</p>
+  <h1>How multi-GPU pair_nequip scales</h1>
+  <p class="lede">The complete measured picture, 1–64 GCDs: strong scaling, weak scaling,
+  the per-step cost model behind both, per-GCD capacity, and the comparison against the
+  ML-IAP route. LUMI-G MI250X, OAM-M fine-tuned model, OpenEquivariance kernels, fp32
+  inference, CPU-bound runs throughout (June 2026 campaign + the August 64-GCD extension).</p>
+</header>
+
+<div class="callout">
+  <p><b>Three findings carry everything else:</b></p>
+  <p>1. Throughput is set almost entirely by <b>atoms per GCD</b> — one master curve.</p>
+  <p>2. The curve flattens at a fixed <b>per-step floor</b> (~13 ms MgO+water, ~10 ms Cu):
+  small cells stop gaining at 8–16 GCDs, but that is launch/exchange latency, not a
+  communication wall — <b>no ceiling was found at 64 GCDs</b> (8 nodes, the most tested).</p>
+  <p>3. Keep <b>≳1 000 atoms/GCD</b> and both strong (84%/doubling) and weak (~flat) scaling stay healthy.</p>
+</div>
+
+<h2><span class="no">1</span>One chart: throughput vs atoms per GCD</h2>
+<p>Every MgO+water measurement from every series — strong, weak, 1 to 64 GCDs, cells of
+360 to 184 320 atoms — plotted against the atoms each GCD owns. They collapse onto one
+curve; only the single-GCD points (no inter-rank exchange at all) sit slightly above it.</p>
+<div class="fig" id="fig-collapse"></div>
+
+<h2><span class="no">2</span>Strong scaling — same cell, more GPUs</h2>
+<p>Solid lines are measurements; the dashed gray line is ideal scaling from the 1-GCD
+point. The ML-IAP route runs the identical model and OEQ kernels, so the gap <em>is</em>
+the coupling overhead.</p>
+<h3>Small cells (the active-learning regime)</h3>
+<div class="grid2">
+  <div class="fig" id="fig-strong-small-mgoh"></div>
+  <div class="fig" id="fig-strong-small-cu"></div>
+</div>
+<p class="footnote">pair_nequip saturates ~2.2–2.6× higher than mliap/kk (77 vs 36;
+98 vs 38 ts/s). Saturation is the per-step floor: at 32 GCDs these cells leave only
+90–64 atoms per GCD.</p>
+<h3>Large cells (the production regime)</h3>
+<div class="grid2">
+  <div class="fig" id="fig-strong-large-mgoh"></div>
+  <div class="fig" id="fig-strong-large-cu"></div>
+</div>
+<p class="footnote">The 23 040-atom pair_nequip series extends to 64 GCDs (measured
+2026-08-19; the same-allocation 32-GCD rerun gave 44.8 vs June's 45.0). mliap was not
+re-run at 64; its 32-GCD trend had already flattened (§C.7 of the wiki guide records its
+multi-node variance separately).</p>
+
+<h2><span class="no">3</span>Weak scaling — grow the cell with the GPU count</h2>
+<p>Constant atoms/GCD; flat is perfect. The win per doubling is <em>capacity</em>: twice
+the atoms simulated at the same pace.</p>
+<div class="fig" id="fig-weak"></div>
+
+<h2><span class="no">4</span>Past 32 GCDs</h2>
+<div class="tablewrap"><table>
+  <tr><th>MgO+water cell</th><th class="num">32 GCDs</th><th class="num">64 GCDs</th><th class="num">32→64 step efficiency</th><th class="num">atoms/GCD @64</th></tr>
+  <tr><td>23 040 atoms (strong)</td><td class="num">44.8</td><td class="num">59.5</td><td class="num">66%</td><td class="num">360</td></tr>
+  <tr><td>92 160 atoms (strong)</td><td class="num">14.9</td><td class="num">25.0</td><td class="num"><b>84%</b></td><td class="num">1 440</td></tr>
+  <tr><td>184 320 atoms (weak vs 92 160@32)</td><td class="num">14.9</td><td class="num">14.8</td><td class="num">~flat (weak)</td><td class="num">2 880</td></tr>
+</table></div>
+<p>At ≳1 400 atoms/GCD, strong scaling continues essentially unimpeded through 8 nodes;
+at 360 atoms/GCD gains shrink toward the floor but have not stopped. Nothing in the
+32→64 step suggests an interconnect wall — weak scaling is flat, and throughput at fixed
+atoms/GCD is the same whether the ranks span 4 nodes or 8 (58.3 ts/s for 11 520 atoms on
+32 GCDs vs 59.5 for 23 040 on 64, both 360 atoms/GCD). Beyond 64 GCDs is untested.</p>
+
+<h2><span class="no">5</span>Per-GCD capacity (why OEQ is the default)</h2>
+<div class="fig" id="fig-capacity"></div>
+<p class="footnote">One 64 GB GCD, fp32 OAM-M inference, ramping atoms until out-of-memory.
+OpenEquivariance's streamed tensor-product contractions never materialize the large
+per-edge intermediates: ~4× the capacity (46–92k vs 11.5–23k atoms) <em>and</em> ~10× the
+speed at equal size.</p>
+
+<h2><span class="no">6</span>The cost model, and how to size a run</h2>
+<p>Per step, per GCD, the data fit a two-term model:</p>
+<p style="text-align:center"><code>t_step ≈ t_floor + c · (atoms/GCD)</code></p>
+<p>with <code>t_floor ≈ 13 ms</code> (MgO+water; ~10 ms for Cu) — the per-layer exchange
+latency plus kernel-launch overhead, independent of size — and
+<code>c ≈ 16–18 µs·GCD/atom</code> for OAM-M with OEQ on MI250X. This one equation
+reproduces the whole family of curves above: strong scaling bends over when
+<code>c·atoms/GCD</code> shrinks toward <code>t_floor</code> (≈800 atoms/GCD for the
+halfway point), weak scaling is flat because atoms/GCD is constant, and the collapse plot
+in §1 <em>is</em> the model.</p>
+<p><b>Sizing a run:</b> pick <code>N_GCD ≈ atoms / 1000–3000</code>. The lower end buys
+speed at ~80% efficiency; the upper end is nearly free of overhead. Below ~400 atoms/GCD
+you are paying full nodes for the floor. Small cells (≲3 000 atoms) top out at 8–16 GCDs
+— beyond that, spend the GPUs on more replicas instead.</p>
+
+<h2><span class="no">7</span>Methodology &amp; provenance</h2>
+<p>All numbers are <b>bound</b> runs (LUMI CCD↔GCD adjacency masks; <code>--cpu-bind=none</code>
+inflates multi-node variance catastrophically — up to 57% of loop time in sync-wait — and
+was the June campaign's headline methodology correction). Both engines were compiled from
+the same fine-tuned <code>.nequip.zip</code> on the deployed module, with OEQ on both.
+Environments, gate results, and the engine comparison in full detail:
+<a href="./">the evaluation page</a> §6. June series: campaign report
+<code>pair_nequip_vs_mliap_bound_20260628.md</code>; 64-GCD extension: LUMI job 21346291
+(2026-08-19) with same-allocation 32-GCD baselines. Every chart's data is in its
+"data table" fold-out.</p>
+
+</div></div></div>
+<div id="tip"></div>
+<script>
+// ---- data (ts/s) ----
+const D = {
+  strongSmallMgoh: {
+    title: "MgO+water · 2 880 atoms", sub: "strong scaling, small cell (ts/s)",
+    x: [1,2,4,8,16,32],
+    series: [
+      { name: "pair_nequip", key: "s1", marker: "circle", y: [17.2,30.3,48.0,64.6,76.1,77.3] },
+      { name: "mliap/kk",    key: "s2", marker: "square", y: [15.8,25.0,31.7,33.9,35.7,35.6] },
+    ], ideal: 17.2, xlab: "GCDs", log2x: true },
+  strongSmallCu: {
+    title: "Cu · 2 048 atoms", sub: "strong scaling, small cell (ts/s)",
+    x: [1,2,4,8,16,32],
+    series: [
+      { name: "pair_nequip", key: "s1", marker: "circle", y: [23.0,41.5,63.7,85.8,92.9,98.4] },
+      { name: "mliap/kk",    key: "s2", marker: "square", y: [22.3,32.9,35.7,35.7,38.0,38.0] },
+    ], ideal: 23.0, xlab: "GCDs", log2x: true },
+  strongLargeMgoh: {
+    title: "MgO+water · 23 040 atoms", sub: "strong scaling, large cell (ts/s) — pair_nequip measured to 64 GCDs",
+    x: [1,2,4,8,16,32,64],
+    series: [
+      { name: "pair_nequip", key: "s1", marker: "circle", y: [2.40,4.66,8.68,16.0,27.1,45.0,59.5] },
+      { name: "mliap/kk",    key: "s2", marker: "square", y: [2.27,4.52,8.34,14.6,21.6,22.1,null] },
+    ], ideal: 2.40, xlab: "GCDs", log2x: true },
+  strongLargeCu: {
+    title: "Cu · 16 384 atoms", sub: "strong scaling, large cell (ts/s)",
+    x: [1,2,4,8,16,32],
+    series: [
+      { name: "pair_nequip", key: "s1", marker: "circle", y: [3.75,7.27,13.09,21.7,36.9,60.7] },
+      { name: "mliap/kk",    key: "s2", marker: "square", y: [3.60,6.97,11.02,20.5,27.9,33.8] },
+    ], ideal: 3.75, xlab: "GCDs", log2x: true },
+  weak: {
+    title: "MgO+water · weak scaling", sub: "constant atoms/GCD — flat is perfect (ts/s)",
+    x: [1,2,4,8,16,32,64],
+    series: [
+      { name: "360 atoms/GCD",   key: "s1", marker: "circle", y: [74.7,76.6,72.0,65.4,59.7,58.3,null] },
+      { name: "2 880 atoms/GCD", key: "s2", marker: "square", y: [17.3,16.9,16.0,16.0,14.9,14.9,14.8] },
+    ], xlab: "GCDs (cell grows with count)", log2x: true },
+  capacity: {
+    title: "Single GCD · OAM-M inference", sub: "throughput vs cell size until out-of-memory (ts/s)",
+    x: [2880,5760,11520,23040,46080],
+    series: [
+      { name: "with OEQ", key: "s1", marker: "circle", y: [17.5,9.37,4.85,2.44,1.23], oom: 92160 },
+      { name: "stock (no OEQ)", key: "s2", marker: "square", y: [1.87,0.95,0.48,null,null], oom: 23040 },
+    ], xlab: "atoms on one GCD", log10x: true },
+  collapse: {
+    title: "MgO+water · every pair_nequip measurement, 1–64 GCDs", sub: "throughput vs atoms owned per GCD (ts/s)",
+    scatter: true, xlab: "atoms per GCD", log10x: true,
+    series: [
+      { name: "multi-rank (exchange active)", key: "s1", marker: "circle", pts: [
+        [1440,30.3],[720,48.0],[360,64.6],[180,76.1],[90,77.3],
+        [11520,4.66],[5760,8.68],[2880,16.0],[1440,27.1],[720,44.8],[720,45.0],[360,59.5],
+        [360,76.6],[360,72.0],[360,65.4],[360,59.7],[360,58.3],
+        [2880,16.9],[2880,16.0],[2880,16.0],[2880,14.9],[2880,14.9],[2880,14.8],
+        [2880,14.9],[1440,25.0] ] },
+      { name: "single GCD (no exchange)", key: "s2", marker: "square", pts: [
+        [2880,17.2],[23040,2.40],[360,74.7],[2880,17.3] ] },
+    ] },
+};
+
+// ---- tiny chart renderer ----
+const NS = "http://www.w3.org/2000/svg";
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function el(n, at, parent) { const e = document.createElementNS(NS, n);
+  for (const k in at) e.setAttribute(k, at[k]); if (parent) parent.appendChild(e); return e; }
+function fmt(v) { return v >= 1000 ? v.toLocaleString("en-US") : String(v); }
+const tip = document.getElementById("tip");
+
+function chart(id, cfg) {
+  const host = document.getElementById(id); if (!host) return;
+  const W = 460, H = 300, m = { l: 46, r: 14, t: 8, b: 34 };
+  const panel = document.createElement("div"); panel.className = "panel";
+  panel.innerHTML = `<h4>${cfg.title}</h4><p class="sub">${cfg.sub}</p>`;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": cfg.title });
+  panel.appendChild(svg); host.appendChild(panel);
+
+  // x mapping
+  const xs = cfg.scatter ? cfg.series.flatMap(s => s.pts.map(p => p[0])) : cfg.x;
+  const xmin = Math.min(...xs), xmax = Math.max(...xs);
+  const tx = v => cfg.log2x
+    ? m.l + (Math.log2(v) - Math.log2(xmin)) / (Math.log2(xmax) - Math.log2(xmin)) * (W - m.l - m.r)
+    : cfg.log10x
+    ? m.l + (Math.log10(v) - Math.log10(xmin)) / (Math.log10(xmax) - Math.log10(xmin)) * (W - m.l - m.r)
+    : m.l + (v - xmin) / (xmax - xmin) * (W - m.l - m.r);
+  // y mapping (always from 0)
+  const ys = cfg.scatter ? cfg.series.flatMap(s => s.pts.map(p => p[1]))
+                         : cfg.series.flatMap(s => s.y).filter(v => v != null);
+  const ymax = Math.max(...ys, cfg.ideal ? Math.min(cfg.ideal * cfg.x[cfg.x.length-1], Math.max(...ys) * 1.6) : 0) * 1.08;
+  const ty = v => H - m.b - (v / ymax) * (H - m.t - m.b);
+
+  // grid + axes (recessive)
+  const nticksY = 4;
+  for (let i = 0; i <= nticksY; i++) {
+    const v = ymax / nticksY * i, y = ty(v);
+    el("line", { x1: m.l, x2: W - m.r, y1: y, y2: y, stroke: css("--line"), "stroke-width": 1 }, svg);
+    const t = el("text", { x: m.l - 6, y: y + 3.5, "text-anchor": "end", "font-size": 10, fill: css("--muted") }, svg);
+    t.textContent = v >= 10 || v === 0 ? Math.round(v) : v.toFixed(1);
+  }
+  const xticks = cfg.scatter || cfg.log10x
+    ? (cfg.log10x ? [...new Set(xs)].sort((a,b)=>a-b).filter((v,i,a)=> i===0 || v/a[i-1] > 1.7) : cfg.x)
+    : cfg.x;
+  for (const v of xticks) {
+    const x = tx(v);
+    const t = el("text", { x, y: H - m.b + 14, "text-anchor": "middle", "font-size": 10, fill: css("--muted") }, svg);
+    t.textContent = fmt(v);
+  }
+  el("line", { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, stroke: css("--muted"), "stroke-width": 1 }, svg);
+  const xl = el("text", { x: (m.l + W - m.r) / 2, y: H - 6, "text-anchor": "middle", "font-size": 10.5, fill: css("--fg-2") }, svg);
+  xl.textContent = cfg.xlab;
+
+  // ideal-scaling reference
+  if (cfg.ideal) {
+    const pts = cfg.x.filter(n => cfg.ideal * n <= ymax).map(n => `${tx(n)},${ty(cfg.ideal * n)}`);
+    el("polyline", { points: pts.join(" "), fill: "none", stroke: css("--ref"),
+      "stroke-width": 1.5, "stroke-dasharray": "5 4" }, svg);
+    const lastN = cfg.x.filter(n => cfg.ideal * n <= ymax).pop();
+    const lt = el("text", { x: tx(lastN) + 4, y: ty(cfg.ideal * lastN) - 4, "font-size": 9.5, fill: css("--muted") }, svg);
+    lt.textContent = "ideal";
+  }
+
+  // series
+  cfg.series.forEach(s => {
+    const color = css("--" + s.key);
+    const pts = cfg.scatter
+      ? s.pts.map(p => [tx(p[0]), ty(p[1]), p[0], p[1]])
+      : cfg.x.map((n, i) => s.y[i] == null ? null : [tx(n), ty(s.y[i]), n, s.y[i]]).filter(Boolean);
+    if (!cfg.scatter)
+      el("polyline", { points: pts.map(p => p[0] + "," + p[1]).join(" "), fill: "none",
+        stroke: color, "stroke-width": 2, "stroke-linejoin": "round" }, svg);
+    pts.forEach(p => {
+      const mk = s.marker === "square"
+        ? el("rect", { x: p[0]-3.5, y: p[1]-3.5, width: 7, height: 7, rx: 1.5, fill: color, stroke: css("--bg"), "stroke-width": 1.5 }, svg)
+        : el("circle", { cx: p[0], cy: p[1], r: 4, fill: color, stroke: css("--bg"), "stroke-width": 1.5 }, svg);
+      const hit = el("circle", { cx: p[0], cy: p[1], r: 11, fill: "transparent" }, svg);
+      hit.addEventListener("pointerenter", ev => {
+        tip.textContent = `${s.name} · ${cfg.scatter ? fmt(p[2]) + " atoms/GCD" : fmt(p[2]) + (cfg.log10x ? " atoms" : " GCDs")} → ${p[3]} ts/s`;
+        tip.style.opacity = 1;
+      });
+      hit.addEventListener("pointermove", ev => { tip.style.left = (ev.clientX + 12) + "px"; tip.style.top = (ev.clientY - 26) + "px"; });
+      hit.addEventListener("pointerleave", () => tip.style.opacity = 0);
+    });
+    // direct label at last point
+    const lp = pts[pts.length - 1];
+    const dl = el("text", { x: Math.min(lp[0] + 7, W - m.r - 2), y: lp[1] - 7, "font-size": 10, "font-weight": 600, fill: color,
+      "text-anchor": lp[0] > W - 90 ? "end" : "start" }, svg);
+    dl.textContent = s.name;
+    // OOM marker
+    if (s.oom) {
+      const x = tx(Math.min(s.oom, xmax)); const y = lp[1];
+      const ot = el("text", { x: x, y: y - 16, "font-size": 9.5, fill: css("--muted"), "text-anchor": "end" }, svg);
+      ot.textContent = `OOM @ ${fmt(s.oom)}`;
+    }
+  });
+
+  // legend + data table
+  const lg = document.createElement("div"); lg.className = "legend";
+  lg.innerHTML = cfg.series.map(s =>
+    `<span class="k"><span class="sw" style="background:var(--${s.key})"></span>${s.name}</span>`).join("") +
+    (cfg.ideal ? `<span class="k"><span class="sw" style="background:transparent;border-top:2px dashed var(--ref);height:0"></span>ideal scaling</span>` : "");
+  panel.appendChild(lg);
+  const det = document.createElement("details");
+  let rows;
+  if (cfg.scatter) rows = cfg.series.flatMap(s => s.pts.map(p => `<tr><td>${s.name}</td><td class="num">${fmt(p[0])}</td><td class="num">${p[1]}</td></tr>`)).join("");
+  else rows = cfg.x.map((n, i) => `<tr><td class="num">${fmt(n)}</td>` + cfg.series.map(s => `<td class="num">${s.y[i] ?? "—"}</td>`).join("") + `</tr>`).join("");
+  const head = cfg.scatter ? `<tr><th>series</th><th class="num">atoms/GCD</th><th class="num">ts/s</th></tr>`
+    : `<tr><th class="num">${cfg.log10x ? "atoms" : "GCDs"}</th>` + cfg.series.map(s => `<th class="num">${s.name}</th>`).join("") + `</tr>`;
+  det.innerHTML = `<summary>data table</summary><div class="tablewrap"><table>${head}${rows}</table></div>`;
+  panel.appendChild(det);
+}
+
+chart("fig-collapse", D.collapse);
+chart("fig-strong-small-mgoh", D.strongSmallMgoh);
+chart("fig-strong-small-cu", D.strongSmallCu);
+chart("fig-strong-large-mgoh", D.strongLargeMgoh);
+chart("fig-strong-large-cu", D.strongLargeCu);
+chart("fig-weak", D.weak);
+chart("fig-capacity", D.capacity);
+</script>
+</body></html>
