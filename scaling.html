@@ -319,7 +319,7 @@ function chart(id, cfg) {
     const x = tx(v);
     const anchor = x > W - m.r - 18 ? "end" : "middle";
     const t = el("text", { x, y: H - m.b + 14, "text-anchor": anchor, "font-size": 10, fill: css("--muted") }, svg);
-    t.textContent = fmt(v);
+    t.textContent = v >= 10000 ? (v % 1000 === 0 ? v/1000 + "k" : (v/1000).toFixed(1) + "k") : fmt(v);
   }
   el("line", { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, stroke: css("--muted"), "stroke-width": 1 }, svg);
   const xl = el("text", { x: (m.l + W - m.r) / 2, y: H - 6, "text-anchor": "middle", "font-size": 10.5, fill: css("--fg-2") }, svg);
